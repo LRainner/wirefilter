@@ -6,33 +6,60 @@ static A: System = System;
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::net::IpAddr;
 use std::str::FromStr;
-use wirefilter::{Bytes, ExecutionContext, LhsValue, Scheme};
+use wirefilter::{Array, Bytes, ExecutionContext, LhsValue, Scheme, TypedMap, Type};
 
 // ---------------------------------------------------------------------------
 // 模拟检测结果中的 HTTP 解析结构
 // ---------------------------------------------------------------------------
-// 字段来源: 实际 HTTP 解析结果
-// attack_type / decode_chain 来自检测引擎
+// header: Map<Bytes> — key 是 header name，value 是 Bytes（单值场景）
+//   实际场景中 header 可能重复，但 wirefilter 的 Map 只支持单值，
+//   重复 header 用逗号合并后存入（如 Cookie, X-Forwarded-For）
+// query: Array(Bytes) — query 参数数组，每个元素是 "key=value" 格式
 // ---------------------------------------------------------------------------
+
+fn build_scheme() -> Scheme {
+    Scheme! {
+        // 检测结果字段
+        attack_type: Bytes,
+        payload: Bytes,
+        decode_chain: Bytes,
+        // HTTP 请求行
+        http.method: Bytes,
+        http.raw_uri: Bytes,
+        http.raw_path: Bytes,
+        http.raw_query: Bytes,
+        http.path: Bytes,
+        http.filename: Bytes,
+        http.decoded_query: Bytes,
+        http.fragment: Bytes,
+        // HTTP 头部: Map<Bytes>
+        http.header: Map(Bytes),
+        // HTTP query 参数: Array<Bytes>
+        http.query: Array(Bytes),
+        // HTTP body
+        http.body: Bytes,
+        // 网络层
+        tcp.port: Int,
+        ip.src: Ip,
+        ssl: Bool,
+    }
+    .build()
+}
 
 /// 模拟检测结果
 struct DetectionResult {
     attack_type: &'static str,
     payload: &'static str,
     decode_chain: &'static str,
-    // HTTP 解析结果字段
-    method: &'static str,         // GET / POST / ...
-    raw_uri: &'static [u8],      // 未解码 URI
-    raw_path: &'static [u8],     // 未解码路径
-    raw_query: &'static [u8],    // 未解码 query
-    path: &'static str,          // 解码后路径
-    filename: &'static str,      // 解码后文件名
-    decoded_query: &'static str, // 解码后完整 query
-    fragment: &'static [u8],     // URI fragment
-    host: &'static str,          // Host header
-    content_type: &'static str,  // Content-Type header
-    ua: &'static str,            // User-Agent header
-    body: &'static [u8],         // 请求 body
+    method: &'static str,
+    raw_uri: &'static [u8],
+    raw_path: &'static [u8],
+    raw_query: &'static [u8],
+    path: &'static str,
+    filename: &'static str,
+    decoded_query: &'static str,
+    fragment: &'static [u8],
+    body: &'static [u8],
     ip_src: IpAddr,
     tcp_port: i64,
     ssl: bool,
@@ -51,9 +78,6 @@ fn sample_detection() -> DetectionResult {
         filename: "users",
         decoded_query: "id=\"><script>alert(1)</script>",
         fragment: b"",
-        host: "internal.api.corp",
-        content_type: "application/json",
-        ua: "curl/7.68.0",
         body: br#"{"event":"user_action","timestamp":1713254400,"session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","user":{"id":12345,"name":"test_user","email":"test@example.com","roles":["viewer","editor"]},"request":{"method":"POST","path":"/api/v1/data/submit","headers":{"content-type":"application/json","x-request-id":"req-987654321","x-forwarded-for":"192.168.1.100"}},"payload":"%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E","metadata":{"source":"web_client","version":"2.1.0","platform":"linux","browser":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36","extra_fields":{"debug":true,"trace_id":"trace-abc123def456","span_id":"span-789ghi012","environment":"production","deployment":"us-west-2","region":"us-west","availability_zone":"us-west-2a","instance_type":"c5.2xlarge","container_id":"container-xyz789","pod_name":"api-server-7d4f8b6c9-x2k5m","namespace":"production","cluster":"main-cluster","node_name":"node-pool-3-worker-7"}}}"#,
         ip_src: IpAddr::from_str("10.0.0.1").unwrap(),
         tcp_port: 80,
@@ -61,33 +85,34 @@ fn sample_detection() -> DetectionResult {
     }
 }
 
-fn build_scheme() -> Scheme {
-    Scheme! {
-        // 检测结果字段
-        attack_type: Bytes,
-        payload: Bytes,
-        decode_chain: Bytes,
-        // HTTP 请求行
-        http.method: Bytes,
-        http.raw_uri: Bytes,
-        http.raw_path: Bytes,
-        http.raw_query: Bytes,
-        http.path: Bytes,
-        http.filename: Bytes,
-        http.decoded_query: Bytes,
-        http.fragment: Bytes,
-        // HTTP 头部
-        http.host: Bytes,
-        http.content_type: Bytes,
-        http.ua: Bytes,
-        // HTTP body
-        http.body: Bytes,
-        // 网络层
-        tcp.port: Int,
-        ip.src: Ip,
-        ssl: Bool,
-    }
-    .build()
+/// 构建 header Map，模拟实际 HTTP 解析的 header 结构
+/// 重复的 header 用逗号合并（如 RFC 7230 规定）
+fn build_headers() -> TypedMap<'static, Bytes<'static>> {
+    let mut headers = TypedMap::new();
+    headers.insert(b"host".to_vec().into_boxed_slice(), Bytes::from("internal.api.corp"));
+    headers.insert(b"content-type".to_vec().into_boxed_slice(), Bytes::from("application/json"));
+    headers.insert(b"user-agent".to_vec().into_boxed_slice(), Bytes::from("curl/7.68.0"));
+    headers.insert(b"accept".to_vec().into_boxed_slice(), Bytes::from("*/*"));
+    headers.insert(b"x-request-id".to_vec().into_boxed_slice(), Bytes::from("req-987654321"));
+    headers.insert(b"x-forwarded-for".to_vec().into_boxed_slice(), Bytes::from("192.168.1.100, 10.0.0.1"));
+    headers.insert(b"cookie".to_vec().into_boxed_slice(), Bytes::from("session=abc123; lang=en"));
+    headers.insert(b"authorization".to_vec().into_boxed_slice(), Bytes::from("Bearer eyJhbGciOiJIUzI1NiJ9.test.sig"));
+    headers.insert(b"content-length".to_vec().into_boxed_slice(), Bytes::from("856"));
+    headers.insert(b"connection".to_vec().into_boxed_slice(), Bytes::from("keep-alive"));
+    headers
+}
+
+/// 构建 query Array，模拟实际 HTTP 解析的 query 结构
+/// 每个元素是 "key=value" 格式的原始字节
+fn build_query() -> Array<'static> {
+    let items: Vec<LhsValue<'static>> = vec![
+        LhsValue::Bytes(Bytes::from(b"id=\"><script>alert(1)</script>".to_vec().into_boxed_slice())),
+        LhsValue::Bytes(Bytes::from(b"page=1".to_vec().into_boxed_slice())),
+        LhsValue::Bytes(Bytes::from(b"limit=20".to_vec().into_boxed_slice())),
+        LhsValue::Bytes(Bytes::from(b"sort=created_at".to_vec().into_boxed_slice())),
+        LhsValue::Bytes(Bytes::from(b"order=desc".to_vec().into_boxed_slice())),
+    ];
+    Array::try_from_iter(Type::Bytes, items.into_iter()).unwrap()
 }
 
 /// 把检测结果填入 ExecutionContext
@@ -103,9 +128,8 @@ fn fill_ctx(ctx: &mut ExecutionContext<'static, ()>, scheme: &Scheme, det: &Dete
     ctx.set_field_value(scheme.get_field("http.filename").unwrap(), det.filename).unwrap();
     ctx.set_field_value(scheme.get_field("http.decoded_query").unwrap(), det.decoded_query).unwrap();
     ctx.set_field_value(scheme.get_field("http.fragment").unwrap(), Bytes::from(det.fragment)).unwrap();
-    ctx.set_field_value(scheme.get_field("http.host").unwrap(), det.host).unwrap();
-    ctx.set_field_value(scheme.get_field("http.content_type").unwrap(), det.content_type).unwrap();
-    ctx.set_field_value(scheme.get_field("http.ua").unwrap(), det.ua).unwrap();
+    ctx.set_field_value(scheme.get_field("http.header").unwrap(), build_headers()).unwrap();
+    ctx.set_field_value(scheme.get_field("http.query").unwrap(), build_query()).unwrap();
     ctx.set_field_value(scheme.get_field("http.body").unwrap(), Bytes::from(det.body)).unwrap();
     ctx.set_field_value(scheme.get_field("tcp.port").unwrap(), det.tcp_port).unwrap();
     ctx.set_field_value(scheme.get_field("ip.src").unwrap(), det.ip_src).unwrap();
@@ -119,7 +143,7 @@ fn fill_ctx(ctx: &mut ExecutionContext<'static, ()>, scheme: &Scheme, det: &Dete
 fn bench_step_breakdown(c: &mut Criterion) {
     let scheme = build_scheme();
     let det = sample_detection();
-    let rule = r#"attack_type == "xss" && http.path contains "/api/" && http.decoded_query contains "script" && !ssl && http.ua ~ "(curl|python)""#;
+    let rule = r#"attack_type == "xss" && http.path contains "/api/" && http.header["user-agent"] contains "curl" && !ssl"#;
 
     let mut group = c.benchmark_group("step_breakdown");
 
@@ -182,10 +206,11 @@ fn generate_100_rules() -> Vec<String> {
         let method = methods[i % methods.len()];
         let ua = uas[i % uas.len()];
         let ct = content_types[i % content_types.len()];
-        // 5 个条件: attack_type + path + method + ua + content_type
+        let query_idx = i % 5;
+        // 5 个条件: attack_type + path + method + header["user-agent"] + http.query[query_idx]
         format!(
-            r#"attack_type == "{}" && http.path contains "{}" && http.method == "{}" && http.ua contains "{}" && http.content_type == "{}""#,
-            at, path, method, ua, ct
+            r#"attack_type == "{}" && http.path contains "{}" && http.method == "{}" && http.header["user-agent"] contains "{}" && http.query[{}] contains "{}""#,
+            at, path, method, ua, query_idx, ct
         )
     }).collect()
 }
@@ -197,9 +222,9 @@ fn bench_100_rules(c: &mut Criterion) {
     let rules = generate_100_rules();
     let filters: Vec<_> = rules.iter().map(|r| scheme.parse(r).unwrap().compile()).collect();
 
-    // 准备一条能在第 50 条命中的规则集
+    // 第 50 条命中
     let mut hit_rules = rules.clone();
-    hit_rules[49] = r#"attack_type == "xss" && http.path contains "/api/" && http.method == "GET" && http.ua contains "curl" && http.content_type == "application/json""#.to_string();
+    hit_rules[49] = r#"attack_type == "xss" && http.path contains "/api/" && http.method == "GET" && http.header["user-agent"] contains "curl" && http.query[0] contains "script""#.to_string();
     let hit_filters: Vec<_> = hit_rules.iter().map(|r| scheme.parse(r).unwrap().compile()).collect();
 
     let mut group = c.benchmark_group("100_rules");
