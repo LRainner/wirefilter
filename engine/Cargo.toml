@@ -21,7 +21,7 @@ name = "bench"
 
 [[bench]]
 harness = false
-name = "perf_bench"
+name = "whitelist_bench"
 
 [dependencies]
 backtrace.workspace = true
