@@ -6,19 +6,23 @@ static A: System = System;
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::net::IpAddr;
 use std::str::FromStr;
-use wirefilter::{Array, Bytes, ExecutionContext, LhsValue, Scheme, TypedMap, Type};
+use wirefilter::{AnyFunction, Bytes, ExecutionContext, LhsValue, Scheme, TypedArray, TypedMap};
 
 // ---------------------------------------------------------------------------
 // 模拟检测结果中的 HTTP 解析结构
 // ---------------------------------------------------------------------------
-// header: Map<Bytes> — key 是 header name，value 是 Bytes（单值场景）
-//   实际场景中 header 可能重复，但 wirefilter 的 Map 只支持单值，
-//   重复 header 用逗号合并后存入（如 Cookie, X-Forwarded-For）
-// query: Array(Bytes) — query 参数数组，每个元素是 "key=value" 格式
+// header: Map(Array(Bytes)) — key 是 header name，value 是该 header 的值数组
+//   支持重复 header，同一 key 的所有值放入数组
+//   例: X-Forwarded-For: 1.1.1.1, 2.2.2.2 → "x-forwarded-for" → ["1.1.1.1", "2.2.2.2"]
+//   规则中使用 any(header["key"][*] contains "xxx") 匹配所有值
+// query: Map(Array(Bytes)) — key 是参数名，value 是该参数的值数组
+//   支持重复 key，同一 key 的所有值放入数组
+//   例: ?id=1&id=2 → "id" → ["1", "2"]
+//   规则中使用 any(query["key"][*] contains "xxx") 匹配所有值
 // ---------------------------------------------------------------------------
 
 fn build_scheme() -> Scheme {
-    Scheme! {
+    let mut builder = Scheme! {
         // 检测结果字段
         attack_type: Bytes,
         payload: Bytes,
@@ -32,18 +36,19 @@ fn build_scheme() -> Scheme {
         http.filename: Bytes,
         http.decoded_query: Bytes,
         http.fragment: Bytes,
-        // HTTP 头部: Map<Bytes>
-        http.header: Map(Bytes),
-        // HTTP query 参数: Array<Bytes>
-        http.query: Array(Bytes),
+        // HTTP 头部: Map<Array<Bytes>> — key → value 数组，支持重复 header
+        http.header: Map(Array(Bytes)),
+        // HTTP query 参数: Map<Array<Bytes>> — key → value 数组，支持重复 key
+        http.query: Map(Array(Bytes)),
         // HTTP body
         http.body: Bytes,
         // 网络层
         tcp.port: Int,
         ip.src: Ip,
         ssl: Bool,
-    }
-    .build()
+    };
+    builder.add_function("any", AnyFunction::default()).unwrap();
+    builder.build()
 }
 
 /// 模拟检测结果
@@ -85,34 +90,103 @@ fn sample_detection() -> DetectionResult {
     }
 }
 
-/// 构建 header Map，模拟实际 HTTP 解析的 header 结构
-/// 重复的 header 用逗号合并（如 RFC 7230 规定）
-fn build_headers() -> TypedMap<'static, Bytes<'static>> {
+/// 构建 header Map<Array<Bytes>>，模拟实际 HTTP 解析的 header 结构
+/// key 是 header name，value 是该 header 的所有值数组（支持重复 header）
+/// 例: X-Forwarded-For: 1.1.1.1, 2.2.2.2 → "x-forwarded-for" → ["1.1.1.1", "2.2.2.2"]
+fn build_headers() -> TypedMap<'static, TypedArray<'static, Bytes<'static>>> {
     let mut headers = TypedMap::new();
-    headers.insert(b"host".to_vec().into_boxed_slice(), Bytes::from("internal.api.corp"));
-    headers.insert(b"content-type".to_vec().into_boxed_slice(), Bytes::from("application/json"));
-    headers.insert(b"user-agent".to_vec().into_boxed_slice(), Bytes::from("curl/7.68.0"));
-    headers.insert(b"accept".to_vec().into_boxed_slice(), Bytes::from("*/*"));
-    headers.insert(b"x-request-id".to_vec().into_boxed_slice(), Bytes::from("req-987654321"));
-    headers.insert(b"x-forwarded-for".to_vec().into_boxed_slice(), Bytes::from("192.168.1.100, 10.0.0.1"));
-    headers.insert(b"cookie".to_vec().into_boxed_slice(), Bytes::from("session=abc123; lang=en"));
-    headers.insert(b"authorization".to_vec().into_boxed_slice(), Bytes::from("Bearer eyJhbGciOiJIUzI1NiJ9.test.sig"));
-    headers.insert(b"content-length".to_vec().into_boxed_slice(), Bytes::from("856"));
-    headers.insert(b"connection".to_vec().into_boxed_slice(), Bytes::from("keep-alive"));
+
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("internal.api.corp"));
+        headers.insert(b"host".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("application/json"));
+        headers.insert(b"content-type".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("curl/7.68.0"));
+        headers.insert(b"user-agent".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("*/*"));
+        headers.insert(b"accept".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("req-987654321"));
+        headers.insert(b"x-request-id".to_vec().into_boxed_slice(), vals);
+    }
+    // 重复 header 示例: X-Forwarded-For 有多个值
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("192.168.1.100"));
+        vals.push(Bytes::from("10.0.0.1"));
+        headers.insert(b"x-forwarded-for".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("session=abc123; lang=en"));
+        headers.insert(b"cookie".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("Bearer eyJhbGciOiJIUzI1NiJ9.test.sig"));
+        headers.insert(b"authorization".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("856"));
+        headers.insert(b"content-length".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from("keep-alive"));
+        headers.insert(b"connection".to_vec().into_boxed_slice(), vals);
+    }
+
     headers
 }
 
-/// 构建 query Array，模拟实际 HTTP 解析的 query 结构
-/// 每个元素是 "key=value" 格式的原始字节
-fn build_query() -> Array<'static> {
-    let items: Vec<LhsValue<'static>> = vec![
-        LhsValue::Bytes(Bytes::from(b"id=\"><script>alert(1)</script>".to_vec().into_boxed_slice())),
-        LhsValue::Bytes(Bytes::from(b"page=1".to_vec().into_boxed_slice())),
-        LhsValue::Bytes(Bytes::from(b"limit=20".to_vec().into_boxed_slice())),
-        LhsValue::Bytes(Bytes::from(b"sort=created_at".to_vec().into_boxed_slice())),
-        LhsValue::Bytes(Bytes::from(b"order=desc".to_vec().into_boxed_slice())),
-    ];
-    Array::try_from_iter(Type::Bytes, items.into_iter()).unwrap()
+/// 构建 query Map<Array<Bytes>>，模拟实际 HTTP 解析的 query 结构
+/// key 是参数名，value 是该参数的所有值数组（支持重复 key）
+/// 例: ?id=1&id=2 → "id" → ["1", "2"]
+fn build_query() -> TypedMap<'static, TypedArray<'static, Bytes<'static>>> {
+    let mut query = TypedMap::new();
+
+    // id 参数，有重复值
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from(b"\"><script>alert(1)</script>".to_vec().into_boxed_slice()));
+        vals.push(Bytes::from(b"normal_value".to_vec().into_boxed_slice()));
+        query.insert(b"id".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from(b"1".to_vec().into_boxed_slice()));
+        query.insert(b"page".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from(b"20".to_vec().into_boxed_slice()));
+        query.insert(b"limit".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from(b"created_at".to_vec().into_boxed_slice()));
+        query.insert(b"sort".to_vec().into_boxed_slice(), vals);
+    }
+    {
+        let mut vals = TypedArray::new();
+        vals.push(Bytes::from(b"desc".to_vec().into_boxed_slice()));
+        query.insert(b"order".to_vec().into_boxed_slice(), vals);
+    }
+
+    query
 }
 
 /// 把检测结果填入 ExecutionContext
@@ -143,7 +217,7 @@ fn fill_ctx(ctx: &mut ExecutionContext<'static, ()>, scheme: &Scheme, det: &Dete
 fn bench_step_breakdown(c: &mut Criterion) {
     let scheme = build_scheme();
     let det = sample_detection();
-    let rule = r#"attack_type == "xss" && http.path contains "/api/" && http.header["user-agent"] contains "curl" && !ssl"#;
+    let rule = r#"attack_type == "xss" && http.path contains "/api/" && any(http.header["user-agent"][*] contains "curl") && any(http.query["id"][*] contains "script") && !ssl"#;
 
     let mut group = c.benchmark_group("step_breakdown");
 
@@ -191,26 +265,23 @@ fn bench_step_breakdown(c: &mut Criterion) {
 // ===========================================================================
 // Benchmark 2: 100 条规则串行执行
 // ===========================================================================
-// 100 条规则，每条 5 个条件，测试不同场景
 
 fn generate_100_rules() -> Vec<String> {
     let attack_types = ["sql_injection", "rce", "xxe", "ssrf", "lfi", "rfi", "command_injection", "path_traversal"];
     let paths = ["/admin", "/login", "/api/users", "/upload", "/config", "/debug", "/console", "/graphql"];
     let methods = ["POST", "PUT", "DELETE", "PATCH"];
     let uas = ["sqlmap", "nikto", "nmap", "dirbuster", "wfuzz", "gobuster", "masscan", "zgrab"];
-    let content_types = ["multipart/form-data", "application/xml", "text/xml", "application/x-www-form-urlencoded"];
+    let query_keys = ["id", "page", "limit", "sort", "order"];
 
     (0..100).map(|i| {
         let at = attack_types[i % attack_types.len()];
         let path = paths[i % paths.len()];
         let method = methods[i % methods.len()];
         let ua = uas[i % uas.len()];
-        let ct = content_types[i % content_types.len()];
-        let query_idx = i % 5;
-        // 5 个条件: attack_type + path + method + header["user-agent"] + http.query[query_idx]
+        let qk = query_keys[i % query_keys.len()];
         format!(
-            r#"attack_type == "{}" && http.path contains "{}" && http.method == "{}" && http.header["user-agent"] contains "{}" && http.query[{}] contains "{}""#,
-            at, path, method, ua, query_idx, ct
+            r#"attack_type == "{}" && http.path contains "{}" && http.method == "{}" && any(http.header["user-agent"][*] contains "{}") && any(http.query["{}"][*] contains "evil")"#,
+            at, path, method, ua, qk
         )
     }).collect()
 }
@@ -224,7 +295,7 @@ fn bench_100_rules(c: &mut Criterion) {
 
     // 第 50 条命中
     let mut hit_rules = rules.clone();
-    hit_rules[49] = r#"attack_type == "xss" && http.path contains "/api/" && http.method == "GET" && http.header["user-agent"] contains "curl" && http.query[0] contains "script""#.to_string();
+    hit_rules[49] = r#"attack_type == "xss" && http.path contains "/api/" && http.method == "GET" && any(http.header["user-agent"][*] contains "curl") && any(http.query["id"][*] contains "script")"#.to_string();
     let hit_filters: Vec<_> = hit_rules.iter().map(|r| scheme.parse(r).unwrap().compile()).collect();
 
     let mut group = c.benchmark_group("100_rules");
