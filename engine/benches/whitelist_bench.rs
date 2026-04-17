@@ -54,7 +54,7 @@ fn sample_detection() -> DetectionResult {
         host: "internal.api.corp",
         content_type: "application/json",
         ua: "curl/7.68.0",
-        body: br#"{"data":"test"}"#,
+        body: br#"{"event":"user_action","timestamp":1713254400,"session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","user":{"id":12345,"name":"test_user","email":"test@example.com","roles":["viewer","editor"]},"request":{"method":"POST","path":"/api/v1/data/submit","headers":{"content-type":"application/json","x-request-id":"req-987654321","x-forwarded-for":"192.168.1.100"}},"payload":"%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E","metadata":{"source":"web_client","version":"2.1.0","platform":"linux","browser":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36","extra_fields":{"debug":true,"trace_id":"trace-abc123def456","span_id":"span-789ghi012","environment":"production","deployment":"us-west-2","region":"us-west","availability_zone":"us-west-2a","instance_type":"c5.2xlarge","container_id":"container-xyz789","pod_name":"api-server-7d4f8b6c9-x2k5m","namespace":"production","cluster":"main-cluster","node_name":"node-pool-3-worker-7"}}}"#,
         ip_src: IpAddr::from_str("10.0.0.1").unwrap(),
         tcp_port: 80,
         ssl: false,
