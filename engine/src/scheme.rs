@@ -3,7 +3,7 @@ use crate::ast::{FilterAst, FilterValueAst};
 use crate::functions::FunctionDefinition;
 use crate::lex::{Lex, LexErrorKind, LexResult, LexWith, expect, span, take_while};
 use crate::list_matcher::ListDefinition;
-use crate::types::{GetType, RhsValue, Type};
+use crate::types::{GetType, LhsValue, RhsValue, Type};
 use fnv::FnvBuildHasher;
 use serde::de::Visitor;
 use serde::ser::SerializeMap;
@@ -711,6 +711,107 @@ impl SchemeBuilder {
                 Ok(())
             }
         }
+    }
+
+    /// Registers a zero-arg lazy field method that reads from user_data.
+    ///
+    /// The rule syntax is `field_name()` (e.g., `http.path()`).
+    /// The getter is only called when the rule actually references this field.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// impl DetectionResult {
+    ///     pub fn path(&self) -> &str { self.path }
+    ///     pub fn tcp_port(&self) -> i64 { self.tcp_port }
+    ///     pub fn ssl(&self) -> bool { self.ssl }
+    /// }
+    ///
+    /// // Pass method references directly:
+    /// builder.add_lazy_field("http.path", Type::Bytes, DetectionResult::path);
+    /// builder.add_lazy_field("tcp.port", Type::Int, DetectionResult::tcp_port);
+    /// builder.add_lazy_field("ssl", Type::Bool, DetectionResult::ssl);
+    ///
+    /// // Rule: http.path() contains "/api/"
+    /// ```
+    pub fn add_lazy_field<U: 'static>(
+        &mut self,
+        name: &str,
+        val_type: Type,
+        getter: impl for<'a> Fn(&'a U) -> LhsValue<'a> + Send + Sync + 'static,
+    ) -> Result<(), IdentifierRedefinitionError> {
+        let wrapped_getter: Arc<dyn for<'a> Fn(&'a U) -> Option<LhsValue<'a>> + Send + Sync + 'static> =
+            Arc::new(move |ud: &U| Some(getter(ud)));
+        self.add_function(name, crate::functions::LazyFieldDefinition {
+            return_type: val_type,
+            getter: wrapped_getter,
+        })
+    }
+
+    /// Registers a zero-arg lazy field that auto-converts return type via `Into<LhsValue>`.
+    ///
+    /// This is a convenience wrapper around [`add_lazy_field`](Self::add_lazy_field)
+    /// that accepts getters returning `&str`, `i64`, `bool`, `IpAddr` etc.
+    /// directly without manual conversion to `LhsValue`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// impl DetectionResult {
+    ///     pub fn path(&self) -> &str { self.path }
+    /// }
+    ///
+    /// // Method reference returning &str — auto-converted to LhsValue::Bytes:
+    /// builder.add_lazy_field_auto("http.path", Type::Bytes, DetectionResult::path);
+    /// ```
+    pub fn add_lazy_field_auto<U: 'static, V>(
+        &mut self,
+        name: &str,
+        val_type: Type,
+        getter: impl Fn(&U) -> V + Send + Sync + 'static,
+    ) -> Result<(), IdentifierRedefinitionError>
+    where
+        V: Into<LhsValue<'static>>,
+    {
+        let wrapped_getter: Arc<dyn for<'a> Fn(&'a U) -> Option<LhsValue<'a>> + Send + Sync + 'static> =
+            Arc::new(move |ud: &U| Some(getter(ud).into()));
+        self.add_function(name, crate::functions::LazyFieldDefinition {
+            return_type: val_type,
+            getter: wrapped_getter,
+        })
+    }
+
+    /// Registers a multi-arg lazy method that reads from user_data.
+    ///
+    /// The rule syntax is `method_name(arg1, arg2, ...)` (e.g., `http.header("user-agent")`).
+    /// The implementation is only called when the rule actually references this method.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// builder.add_lazy_method(
+    ///     "http.header",
+    ///     vec![SimpleFunctionParam { arg_kind: SimpleFunctionArgKind::Both, val_type: Type::Bytes }],
+    ///     Type::Array(Box::new(Type::Bytes)),
+    ///     |det: &Arc<DetectionResult>, args: FunctionArgs| {
+    ///         // look up header by key, return Array<Bytes>
+    ///     },
+    /// );
+    /// // Rule: any(http.header("user-agent")[*] contains "curl")
+    /// ```
+    pub fn add_lazy_method<U: 'static>(
+        &mut self,
+        name: &str,
+        params: Vec<crate::functions::SimpleFunctionParam>,
+        return_type: Type,
+        implementation: impl for<'i, 'a> Fn(&U, crate::functions::FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Send + Sync + 'static,
+    ) -> Result<(), IdentifierRedefinitionError> {
+        self.add_function(name, crate::functions::LazyMethodDefinition {
+            params,
+            opt_params: vec![],
+            return_type,
+            implementation: Arc::new(implementation),
+        })
     }
 
     /// Registers a new [`list`](trait.ListDefinition.html) for a given [`type`](enum.Type.html).

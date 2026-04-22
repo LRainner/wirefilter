@@ -2,10 +2,11 @@ use crate::{
     FunctionArgKind, FunctionArgs, FunctionDefinition, FunctionDefinitionContext, FunctionParam,
     FunctionParamError, GetType, LhsValue, ParserSettings, Type,
 };
+use std::any::Any;
 use std::iter::once;
 
 #[inline]
-fn any_impl<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+fn any_impl<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
     let arg = args.next().expect("expected 1 argument, got 0");
     if args.next().is_some() {
         panic!("expected 1 argument, got {}", 2 + args.count());
@@ -62,7 +63,7 @@ impl FunctionDefinition for AnyFunction {
         &'s self,
         _: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
         _: Option<FunctionDefinitionContext>,
-    ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
+    ) -> Box<dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
     {
         Box::new(any_impl)
     }
@@ -73,39 +74,43 @@ mod tests {
     use super::*;
     use crate::Array;
 
+    fn no_user_data() -> &'static dyn Any {
+        &()
+    }
+
     #[test]
     fn test_any_fn() {
         // assert that any([]) is false
         let arr = LhsValue::Array(Array::new(Type::Bool));
         let mut args = vec![Ok(arr)].into_iter();
-        assert_eq!(Some(LhsValue::from(false)), any_impl(&mut args));
+        assert_eq!(Some(LhsValue::from(false)), any_impl(no_user_data(), &mut args));
 
         // assert that any([true]) is true
         let arr = LhsValue::Array(Array::from_iter([true]));
         let mut args = vec![Ok(arr)].into_iter();
-        assert_eq!(Some(LhsValue::from(true)), any_impl(&mut args));
+        assert_eq!(Some(LhsValue::from(true)), any_impl(no_user_data(), &mut args));
 
         // assert that any([false]) is false
         let arr = LhsValue::Array(Array::from_iter([false]));
         let mut args = vec![Ok(arr)].into_iter();
-        assert_eq!(Some(LhsValue::from(false)), any_impl(&mut args));
+        assert_eq!(Some(LhsValue::from(false)), any_impl(no_user_data(), &mut args));
 
         // assert that any([false, true]) is true
         let arr = LhsValue::Array(Array::from_iter([false, true]));
         let mut args = vec![Ok(arr)].into_iter();
-        assert_eq!(Some(LhsValue::from(true)), any_impl(&mut args));
+        assert_eq!(Some(LhsValue::from(true)), any_impl(no_user_data(), &mut args));
 
         // assert that any([true, true]) is true
         let arr = LhsValue::Array(Array::from_iter([true, true]));
         let mut args = vec![Ok(arr)].into_iter();
-        assert_eq!(Some(LhsValue::from(true)), any_impl(&mut args));
+        assert_eq!(Some(LhsValue::from(true)), any_impl(no_user_data(), &mut args));
     }
 
     #[test]
     #[should_panic(expected = "expected 1 argument, got 0")]
     fn test_any_fn_no_args() {
         let mut args = vec![].into_iter();
-        any_impl(&mut args);
+        any_impl(no_user_data(), &mut args);
     }
 
     #[test]
@@ -113,14 +118,14 @@ mod tests {
     fn test_any_fn_too_many_args() {
         let arr = LhsValue::Array(Array::new(Type::Bool));
         let mut args = vec![Ok(arr.clone()), Ok(arr.clone())].into_iter();
-        any_impl(&mut args);
+        any_impl(no_user_data(), &mut args);
     }
 
     #[test]
     #[should_panic]
     fn test_any_fn_bad_lhs_value() {
         let mut args = vec![Ok(LhsValue::from(false))].into_iter();
-        any_impl(&mut args);
+        any_impl(no_user_data(), &mut args);
     }
 
     #[test]
@@ -128,6 +133,6 @@ mod tests {
     fn test_any_fn_bad_lhs_arr_value() {
         let arr = LhsValue::Array(Array::from_iter(["hello"]));
         let mut args = vec![Ok(arr)].into_iter();
-        any_impl(&mut args);
+        any_impl(no_user_data(), &mut args);
     }
 }

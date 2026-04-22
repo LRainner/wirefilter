@@ -2,6 +2,7 @@ use crate::{
     Array, Bytes, ExpectedType, FunctionArgs, FunctionDefinition, FunctionDefinitionContext,
     FunctionParam, FunctionParamError, GetType, LhsValue, ParserSettings, Type,
 };
+use std::any::Any;
 use std::iter::once;
 
 /// A function which, given one or more arrays or byte-strings, returns the
@@ -94,9 +95,9 @@ impl FunctionDefinition for ConcatFunction {
         &'s self,
         _: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
         _: Option<FunctionDefinitionContext>,
-    ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
+    ) -> Box<dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
     {
-        Box::new(|args| {
+        Box::new(|_user_data, args| {
             while let Some(arg) = args.next() {
                 match arg {
                     Ok(LhsValue::Array(array)) => {
@@ -124,6 +125,10 @@ mod tests {
 
     pub static CONCAT_FN: ConcatFunction = ConcatFunction::new();
 
+    fn no_user_data() -> &'static dyn Any {
+        &()
+    }
+
     #[test]
     fn test_concat_bytes() {
         let mut args = vec![
@@ -133,7 +138,7 @@ mod tests {
         .into_iter();
         assert_eq!(
             Some(LhsValue::Bytes(Bytes::Borrowed(b"helloworld"))),
-            CONCAT_FN.compile(&mut std::iter::empty(), None)(&mut args)
+            CONCAT_FN.compile(&mut std::iter::empty(), None)(no_user_data(), &mut args)
         );
     }
 
@@ -148,7 +153,7 @@ mod tests {
         .into_iter();
         assert_eq!(
             Some(LhsValue::Bytes(Bytes::Borrowed(b"helloworldhello2world2"))),
-            CONCAT_FN.compile(&mut std::iter::empty(), None)(&mut args)
+            CONCAT_FN.compile(&mut std::iter::empty(), None)(no_user_data(), &mut args)
         );
     }
 
@@ -159,7 +164,7 @@ mod tests {
         let mut args = vec![Ok(arg1), Ok(arg2)].into_iter();
         assert_eq!(
             Some(LhsValue::Array(Array::from_iter([1, 2, 3, 4, 5, 6]))),
-            CONCAT_FN.compile(&mut std::iter::empty(), None)(&mut args)
+            CONCAT_FN.compile(&mut std::iter::empty(), None)(no_user_data(), &mut args)
         );
     }
 
@@ -167,7 +172,7 @@ mod tests {
     #[should_panic]
     fn test_concat_function_bad_arg_type() {
         let mut args = vec![Ok(LhsValue::from(2))].into_iter();
-        CONCAT_FN.compile(&mut std::iter::empty(), None)(&mut args);
+        CONCAT_FN.compile(&mut std::iter::empty(), None)(no_user_data(), &mut args);
     }
 
     #[test]

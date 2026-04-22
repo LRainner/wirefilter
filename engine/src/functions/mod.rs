@@ -400,16 +400,20 @@ pub trait FunctionDefinition: Debug + Send + Sync {
     fn arg_count(&self) -> (usize, Option<usize>);
     /// Compile the function definition down to a closure that is going to be called
     /// during filter execution.
+    ///
+    /// The first parameter of the returned closure is `&dyn Any` — a type-erased
+    /// reference to the `ExecutionContext`'s user data. Functions that don't need
+    /// user data can simply ignore this parameter.
     fn compile(
         &self,
         params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
         ctx: Option<FunctionDefinitionContext>,
-    ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>;
+    ) -> Box<dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>;
 }
 
 // Simple function APIs
 
-type FunctionPtr = for<'i, 'a> fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>;
+type FunctionPtr = for<'i, 'a> fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>;
 
 /// Wrapper around a function pointer providing the runtime implementation.
 #[derive(Clone, Copy)]
@@ -530,24 +534,195 @@ impl FunctionDefinition for SimpleFunctionDefinition {
         &self,
         params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
         _: Option<FunctionDefinitionContext>,
-    ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
+    ) -> Box<dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
     {
         let params_count = params.len();
         let opt_params = &self.opt_params[(params_count - self.params.len())..];
         let implementation = self.implementation;
         if opt_params.is_empty() {
-            Box::new(move |args| {
+            Box::new(move |user_data, args| {
                 assert_eq!(params_count, args.len());
-                (implementation.0)(args)
+                (implementation.0)(user_data, args)
             })
         } else {
             let opt_args: Vec<Result<LhsValue<'static>, Type>> = opt_params
                 .iter()
                 .map(|opt_param| Ok(opt_param.default_value.clone()))
                 .collect();
-            Box::new(move |args| {
+            Box::new(move |user_data, args| {
                 assert_eq!(params_count, args.len());
-                (implementation.0)(&mut ExactSizeChain::new(args, opt_args.iter().cloned()))
+                (implementation.0)(user_data, &mut ExactSizeChain::new(args, opt_args.iter().cloned()))
+            })
+        }
+    }
+}
+
+// Lazy field/method APIs
+
+use std::sync::Arc;
+
+/// A zero-arg lazy field function that reads its value from user_data.
+///
+/// Registered via [`SchemeBuilder::add_lazy_field`](crate::SchemeBuilder::add_lazy_field).
+/// The rule syntax is `field_name()` (e.g., `http.path()`).
+/// The function is only called when the rule actually references it — natural laziness.
+pub struct LazyFieldDefinition<U: 'static> {
+    /// The type of value returned by this lazy field.
+    pub return_type: Type,
+    /// The getter function that reads the field value from user_data.
+    pub getter: Arc<dyn for<'a> Fn(&'a U) -> Option<LhsValue<'a>> + Send + Sync + 'static>,
+}
+
+impl<U: 'static> Debug for LazyFieldDefinition<U> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyFieldDefinition")
+            .field("return_type", &self.return_type)
+            .finish()
+    }
+}
+
+impl<U: 'static> FunctionDefinition for LazyFieldDefinition<U> {
+    fn context(&self) -> Option<FunctionDefinitionContext> {
+        None
+    }
+
+    fn check_param(
+        &self,
+        _settings: &ParserSettings,
+        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _next_param: &FunctionParam<'_>,
+        _ctx: Option<&mut FunctionDefinitionContext>,
+    ) -> Result<(), FunctionParamError> {
+        Err(FunctionParamError::InvalidConstant(FunctionArgInvalidConstantError::new(
+            "lazy field takes no arguments".into(),
+        )))
+    }
+
+    fn return_type(
+        &self,
+        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _ctx: Option<&FunctionDefinitionContext>,
+    ) -> Type {
+        self.return_type
+    }
+
+    fn arg_count(&self) -> (usize, Option<usize>) {
+        (0, Some(0))
+    }
+
+    fn compile(
+        &self,
+        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _ctx: Option<FunctionDefinitionContext>,
+    ) -> Box<dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
+    {
+        let getter = Arc::clone(&self.getter);
+        Box::new(move |user_data: &dyn Any, _args: FunctionArgs<'_, '_>| {
+            let ud = user_data.downcast_ref::<U>().expect(
+                "LazyFieldDefinition: user_data type mismatch — \
+                 ensure the ExecutionContext uses the same U type as the LazyFieldDefinition",
+            );
+            // getter returns LhsValue<'a> borrowing from ud; into_owned() clones
+            // borrowed data into owned so the result has no lifetime dependency
+            getter(ud).map(|v| v.into_owned())
+        })
+    }
+}
+
+/// A multi-argument lazy method that reads from user_data.
+///
+/// Like [`LazyFieldDefinition`] but with parameters.
+/// Registered via [`SchemeBuilder::add_lazy_method`](crate::SchemeBuilder::add_lazy_method).
+/// Example: `http.header("user-agent")` takes one Bytes argument (the key).
+pub struct LazyMethodDefinition<U: 'static> {
+    /// List of mandatory arguments.
+    pub params: Vec<SimpleFunctionParam>,
+    /// List of optional arguments.
+    pub opt_params: Vec<SimpleFunctionOptParam>,
+    /// Function return type.
+    pub return_type: Type,
+    /// The implementation that receives user_data and function args.
+    /// Note: the returned LhsValue may borrow from &U; into_owned() is called
+    /// automatically during compilation to ensure the result is independent.
+    pub implementation: Arc<dyn for<'i, 'a> Fn(&U, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Send + Sync + 'static>,
+}
+
+impl<U: 'static> Debug for LazyMethodDefinition<U> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyMethodDefinition")
+            .field("params", &self.params)
+            .field("return_type", &self.return_type)
+            .finish()
+    }
+}
+
+impl<U: 'static> FunctionDefinition for LazyMethodDefinition<U> {
+    fn context(&self) -> Option<FunctionDefinitionContext> {
+        None
+    }
+
+    fn check_param(
+        &self,
+        settings: &ParserSettings,
+        params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        next_param: &FunctionParam<'_>,
+        ctx: Option<&mut FunctionDefinitionContext>,
+    ) -> Result<(), FunctionParamError> {
+        let index = params.len();
+        if index < self.params.len() {
+            let param = &self.params[index];
+            param.arg_kind.expect(next_param.arg_kind())?;
+            next_param.expect_val_type(once(ExpectedType::Type(param.val_type)))?;
+        } else if index < self.params.len() + self.opt_params.len() {
+            let opt_param = &self.opt_params[index - self.params.len()];
+            opt_param.arg_kind.expect(next_param.arg_kind())?;
+            next_param.expect_val_type(once(ExpectedType::Type(opt_param.default_value.get_type())))?;
+        } else {
+            unreachable!();
+        }
+        let _ = (settings, ctx);
+        Ok(())
+    }
+
+    fn return_type(
+        &self,
+        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _ctx: Option<&FunctionDefinitionContext>,
+    ) -> Type {
+        self.return_type
+    }
+
+    fn arg_count(&self) -> (usize, Option<usize>) {
+        (self.params.len(), Some(self.opt_params.len()))
+    }
+
+    fn compile(
+        &self,
+        params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _ctx: Option<FunctionDefinitionContext>,
+    ) -> Box<dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
+    {
+        let params_count = params.len();
+        let opt_params = &self.opt_params[(params_count - self.params.len())..];
+        let implementation = Arc::clone(&self.implementation);
+
+        if opt_params.is_empty() {
+            Box::new(move |user_data: &dyn Any, args: FunctionArgs<'_, '_>| {
+                let ud = user_data.downcast_ref::<U>().expect(
+                    "LazyMethodDefinition: user_data type mismatch",
+                );
+                implementation(ud, args)
+            })
+        } else {
+            let opt_args: Vec<Result<LhsValue<'static>, Type>> = opt_params
+                .iter()
+                .map(|opt_param| Ok(opt_param.default_value.clone()))
+                .collect();
+            Box::new(move |user_data: &dyn Any, args: FunctionArgs<'_, '_>| {
+                let ud = user_data.downcast_ref::<U>().expect(
+                    "LazyMethodDefinition: user_data type mismatch",
+                );
+                implementation(ud, &mut ExactSizeChain::new(args, opt_args.iter().cloned()))
             })
         }
     }

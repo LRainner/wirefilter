@@ -794,6 +794,7 @@ impl Expr for ComparisonExpr {
 #[allow(clippy::bool_assert_comparison)]
 mod tests {
     use super::*;
+    use std::any::Any;
     use crate::ast::function_expr::{FunctionCallArgExpr, FunctionCallExpr};
     use crate::ast::logical_expr::LogicalExpr;
     use crate::execution_context::ExecutionContext;
@@ -818,7 +819,7 @@ mod tests {
     use std::net::IpAddr;
     use std::sync::LazyLock;
 
-    fn any_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn any_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         match args.next()? {
             Ok(v) => Some(LhsValue::Bool(
                 Array::try_from(v)
@@ -831,11 +832,11 @@ mod tests {
         }
     }
 
-    fn echo_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn echo_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         args.next()?.ok()
     }
 
-    fn lowercase_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn lowercase_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         let input = args.next()?.ok()?;
         match input {
             LhsValue::Bytes(bytes) => Some(LhsValue::Bytes(bytes.to_ascii_lowercase().into())),
@@ -844,7 +845,7 @@ mod tests {
     }
 
     #[allow(clippy::unnecessary_wraps)]
-    fn concat_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn concat_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         let mut output = Vec::new();
         for (index, arg) in args.enumerate() {
             match arg.unwrap() {
@@ -908,12 +909,12 @@ mod tests {
             _: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
             _: Option<FunctionDefinitionContext>,
         ) -> Box<
-            dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>
+            dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>
                 + Sync
                 + Send
                 + 'static,
         > {
-            Box::new(|args| {
+            Box::new(|_user_data, args| {
                 let value_array = Array::try_from(args.next().unwrap().unwrap()).unwrap();
                 let keep_array = Array::try_from(args.next().unwrap().unwrap()).unwrap();
                 let output = Array::try_from_iter(
@@ -935,7 +936,7 @@ mod tests {
         }
     }
 
-    fn len_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn len_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         match args.next()? {
             Ok(LhsValue::Bytes(bytes)) => Some(LhsValue::Int(i64::try_from(bytes.len()).unwrap())),
             Err(Type::Bytes) => None,
