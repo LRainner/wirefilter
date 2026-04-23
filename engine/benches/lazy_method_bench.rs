@@ -126,7 +126,6 @@ fn build_map(entries: &[(&'static str, Vec<&'static str>)]) -> TypedMap<'static,
 }
 
 fn fill_standard(ctx: &mut ExecutionContext<'static, ()>, scheme: &Scheme, det: &DetectionResult) {
-    ctx.clear();
     ctx.set_field_value(scheme.get_field("attack_type").unwrap(), det.attack_type).unwrap();
     ctx.set_field_value(scheme.get_field("payload").unwrap(), det.payload).unwrap();
     ctx.set_field_value(scheme.get_field("http.method").unwrap(), det.method).unwrap();
@@ -214,19 +213,21 @@ fn bench_simple_fields(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("simple_fields");
 
-    group.bench_function("eager_fill_and_execute", |b| {
+    group.bench_function("eager_fill_execute_clear", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
         b.iter(|| {
             fill_standard(&mut ctx, &std_scheme, &det);
             std_filter.execute(&ctx).unwrap();
+            ctx.clear();
         });
     });
 
-    group.bench_function("lazy_update_and_execute", |b| {
+    group.bench_function("lazy_update_execute_clear", |b| {
         let mut ctx = ExecutionContext::new_with(&lazy_scheme, || dummy_detection());
         b.iter(|| {
             ctx.update(sample_detection());
             lazy_filter.execute(&ctx).unwrap();
+            ctx.clear();
         });
     });
 
@@ -255,19 +256,21 @@ fn bench_header_rule(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("header_rule");
 
-    group.bench_function("eager_fill_and_execute", |b| {
+    group.bench_function("eager_fill_execute_clear", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
         b.iter(|| {
             fill_standard(&mut ctx, &std_scheme, &det);
             std_filter.execute(&ctx).unwrap();
+            ctx.clear();
         });
     });
 
-    group.bench_function("lazy_update_and_execute", |b| {
+    group.bench_function("lazy_update_execute_clear", |b| {
         let mut ctx = ExecutionContext::new_with(&lazy_scheme, || dummy_detection());
         b.iter(|| {
             ctx.update(sample_detection());
             lazy_filter.execute(&ctx).unwrap();
+            ctx.clear();
         });
     });
 
@@ -296,19 +299,21 @@ fn bench_header_and_query(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("header_and_query");
 
-    group.bench_function("eager_fill_and_execute", |b| {
+    group.bench_function("eager_fill_execute_clear", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
         b.iter(|| {
             fill_standard(&mut ctx, &std_scheme, &det);
             std_filter.execute(&ctx).unwrap();
+            ctx.clear();
         });
     });
 
-    group.bench_function("lazy_update_and_execute", |b| {
+    group.bench_function("lazy_update_execute_clear", |b| {
         let mut ctx = ExecutionContext::new_with(&lazy_scheme, || dummy_detection());
         b.iter(|| {
             ctx.update(sample_detection());
             lazy_filter.execute(&ctx).unwrap();
+            ctx.clear();
         });
     });
 
@@ -327,17 +332,19 @@ fn bench_fill_only(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("fill_only");
 
-    group.bench_function("eager_fill", |b| {
+    group.bench_function("eager_fill_clear", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
         b.iter(|| {
             fill_standard(&mut ctx, &std_scheme, &det);
+            ctx.clear();
         });
     });
 
-    group.bench_function("lazy_update", |b| {
+    group.bench_function("lazy_update_clear", |b| {
         let mut ctx = ExecutionContext::new_with(&lazy_scheme, || dummy_detection());
         b.iter(|| {
             ctx.update(sample_detection());
+            ctx.clear();
         });
     });
 
@@ -443,7 +450,7 @@ fn bench_100_rules(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("100_rules");
 
-    group.bench_function("eager_fill_execute", |b| {
+    group.bench_function("eager_fill_execute_clear", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
         b.iter(|| {
             fill_standard(&mut ctx, &std_scheme, &det);
@@ -452,10 +459,11 @@ fn bench_100_rules(c: &mut Criterion) {
                     break;
                 }
             }
+            ctx.clear();
         });
     });
 
-    group.bench_function("lazy_update_execute", |b| {
+    group.bench_function("lazy_update_execute_clear", |b| {
         let mut ctx = ExecutionContext::new_with(&lazy_scheme, || dummy_detection());
         b.iter(|| {
             ctx.update(sample_detection());
@@ -464,6 +472,7 @@ fn bench_100_rules(c: &mut Criterion) {
                     break;
                 }
             }
+            ctx.clear();
         });
     });
 
