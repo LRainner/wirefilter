@@ -525,6 +525,7 @@ impl<'a> Iterator for MapEachIterator<'a, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
     use crate::ast::field_expr::IdentifierExpr;
     use crate::{
         Array, FieldIndex, FilterParser, FunctionArgs, FunctionCallArgExpr, FunctionCallExpr,
@@ -533,7 +534,7 @@ mod tests {
     };
     use std::sync::LazyLock;
 
-    fn array_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn array_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         match args.next()? {
             Ok(LhsValue::Bytes(bytes)) => Some(Array::from_iter([bytes]).into()),
             Err(Type::Bytes) => None,
@@ -541,7 +542,7 @@ mod tests {
         }
     }
 
-    fn array2_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn array2_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         match args.next()? {
             Ok(LhsValue::Bytes(bytes)) => Some({
                 let inner = Array::from_iter([bytes]);

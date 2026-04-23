@@ -6,6 +6,7 @@ use std::alloc::System;
 static A: System = System;
 
 use criterion::{Bencher, Criterion, criterion_group, criterion_main};
+use std::any::Any;
 use std::clone::Clone;
 use std::fmt::Debug;
 use std::net::IpAddr;
@@ -14,7 +15,7 @@ use wirefilter::{
     SimpleFunctionArgKind, SimpleFunctionDefinition, SimpleFunctionImpl, SimpleFunctionParam, Type,
 };
 
-fn lowercase<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+fn lowercase<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
     let input = args.next()?.ok()?;
     match input {
         LhsValue::Bytes(mut bytes) => {
@@ -31,7 +32,7 @@ fn lowercase<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
     }
 }
 
-fn uppercase<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+fn uppercase<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
     let input = args.next()?.ok()?;
     match input {
         LhsValue::Bytes(mut bytes) => {

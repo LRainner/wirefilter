@@ -1,10 +1,11 @@
+use std::any::Any;
 use std::env::args;
 use wirefilter::{
     FunctionArgs, LhsValue, Scheme, SimpleFunctionArgKind, SimpleFunctionDefinition,
     SimpleFunctionImpl, SimpleFunctionOptParam, SimpleFunctionParam, Type,
 };
 
-fn panic_function<'a>(_: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+fn panic_function<'a>(_: &dyn Any, _: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
     panic!();
 }
 

@@ -13,6 +13,7 @@ use crate::functions::{
 };
 use crate::lex::{Lex, LexError, LexErrorKind, LexResult, LexWith, expect, skip_space, span};
 use crate::lhs_types::Array;
+use std::any::Any;
 use crate::scheme::Function;
 use crate::types::{GetType, LhsValue, RhsValue, Type};
 use serde::Serialize;
@@ -273,9 +274,10 @@ impl ValueExpr for FunctionCallExpr {
 
             #[inline(always)]
             fn compute<'s, 'a, I: ExactSizeIterator<Item = CompiledValueResult<'a>>>(
+                user_data: &dyn Any,
                 first: CompiledValueResult<'a>,
                 call: &(
-                     dyn for<'b> Fn(FunctionArgs<'_, 'b>) -> Option<LhsValue<'b>> + Sync + Send + 's
+                     dyn for<'b> Fn(&dyn Any, FunctionArgs<'_, 'b>) -> Option<LhsValue<'b>> + Sync + Send + 's
                  ),
                 return_type: Type,
                 f: impl Fn(LhsValue<'a>) -> I,
@@ -298,14 +300,16 @@ impl ValueExpr for FunctionCallExpr {
                     _ => unreachable!(),
                 };
                 if !first.is_empty() {
-                    first = first.filter_map_to(return_type, |elem| call(&mut f(elem)));
+                    first = first.filter_map_to(return_type, |elem| call(user_data, &mut f(elem)));
                 }
                 Ok(LhsValue::Array(first))
             }
 
             if args.is_empty() {
                 CompiledValueExpr::new(move |ctx| {
+                    let user_data: &(dyn Any + 'static) = ctx.get_user_data();
                     compute(
+                        user_data,
                         first.execute(ctx),
                         &call,
                         return_type,
@@ -315,7 +319,9 @@ impl ValueExpr for FunctionCallExpr {
                 })
             } else {
                 CompiledValueExpr::new(move |ctx| {
+                    let user_data: &(dyn Any + 'static) = ctx.get_user_data();
                     compute(
+                        user_data,
                         first.execute(ctx),
                         &call,
                         return_type,
@@ -331,7 +337,8 @@ impl ValueExpr for FunctionCallExpr {
             }
         } else {
             CompiledValueExpr::new(move |ctx| {
-                match call(&mut args.iter().map(|arg| arg.execute(ctx))) {
+                let user_data: &(dyn Any + 'static) = ctx.get_user_data();
+                match call(user_data, &mut args.iter().map(|arg| arg.execute(ctx))) {
                     Some(value) => {
                         debug_assert!(value.get_type() == return_type);
                         Ok(value)
@@ -520,6 +527,7 @@ impl<'i> LexWith<'i, &FilterParser<'_>> for FunctionCallExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::any::Any;
     use crate::SimpleFunctionArgKind;
     use crate::ast::field_expr::{ComparisonExpr, ComparisonOpExpr, IdentifierExpr, OrderingOp};
     use crate::ast::logical_expr::{LogicalExpr, LogicalOp, ParenthesizedExpr};
@@ -534,7 +542,7 @@ mod tests {
     use std::convert::TryFrom;
     use std::sync::LazyLock;
 
-    fn any_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn any_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         match args.next()? {
             Ok(v) => Some(LhsValue::Bool(
                 Array::try_from(v)
@@ -547,11 +555,11 @@ mod tests {
         }
     }
 
-    fn regex_replace<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn regex_replace<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         args.next()?.ok()
     }
 
-    fn lower_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn lower_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         match args.next()? {
             Ok(LhsValue::Bytes(mut b)) => {
                 b.to_mut().make_ascii_lowercase();
@@ -562,11 +570,11 @@ mod tests {
         }
     }
 
-    fn echo_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn echo_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         args.next()?.ok()
     }
 
-    fn len_function<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+    fn len_function<'a>(_user_data: &dyn Any, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
         match args.next()? {
             Ok(LhsValue::Bytes(bytes)) => Some(LhsValue::Int(i64::try_from(bytes.len()).unwrap())),
             Err(Type::Bytes) => None,
