@@ -240,6 +240,9 @@ impl<'e, U> ExecutionContext<'e, U> {
     /// Field values will be computed on-demand by their registered methods.
     pub fn update(&mut self, user_data: U) {
         self.values.iter_mut().for_each(|v| *v = None);
+        self.list_matchers
+            .iter_mut()
+            .for_each(|list_matcher| list_matcher.clear());
         self.user_data = user_data;
     }
 
