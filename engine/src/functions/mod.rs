@@ -409,6 +409,13 @@ pub trait FunctionDefinition: Debug + Send + Sync {
         params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
         ctx: Option<FunctionDefinitionContext>,
     ) -> Box<dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>;
+
+    /// Returns the cache slot index for this function, if caching is enabled.
+    /// `Some(slot)` means the function result can be cached per-request;
+    /// `None` means the function is not cacheable.
+    fn cache_slot(&self) -> Option<usize> {
+        None
+    }
 }
 
 // Simple function APIs
@@ -571,12 +578,15 @@ pub struct LazyFieldDefinition<U: 'static> {
     pub return_type: Type,
     /// The getter function that reads the field value from user_data.
     pub getter: Arc<dyn for<'a> Fn(&'a U) -> Option<LhsValue<'a>> + Send + Sync + 'static>,
+    /// Cache slot assigned by SchemeBuilder. None if caching is disabled.
+    pub cache_slot: Option<usize>,
 }
 
 impl<U: 'static> Debug for LazyFieldDefinition<U> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LazyFieldDefinition")
             .field("return_type", &self.return_type)
+            .field("cache_slot", &self.cache_slot)
             .finish()
     }
 }
@@ -626,6 +636,10 @@ impl<U: 'static> FunctionDefinition for LazyFieldDefinition<U> {
             // borrowed data into owned so the result has no lifetime dependency
             getter(ud).map(|v| v.into_owned())
         })
+    }
+
+    fn cache_slot(&self) -> Option<usize> {
+        self.cache_slot
     }
 }
 
