@@ -634,6 +634,8 @@ pub struct SchemeBuilder {
     lists: Vec<(Type, Box<dyn ListDefinition>)>,
 
     nil_not_equal_is_false: bool,
+
+    lazy_cache_slot_counter: usize,
 }
 
 impl SchemeBuilder {
@@ -742,9 +744,12 @@ impl SchemeBuilder {
     ) -> Result<(), IdentifierRedefinitionError> {
         let wrapped_getter: Arc<dyn for<'a> Fn(&'a U) -> Option<LhsValue<'a>> + Send + Sync + 'static> =
             Arc::new(move |ud: &U| Some(getter(ud)));
+        let slot = self.lazy_cache_slot_counter;
+        self.lazy_cache_slot_counter += 1;
         self.add_function(name, crate::functions::LazyFieldDefinition {
             return_type: val_type,
             getter: wrapped_getter,
+            cache_slot: Some(slot),
         })
     }
 
@@ -775,9 +780,12 @@ impl SchemeBuilder {
     {
         let wrapped_getter: Arc<dyn for<'a> Fn(&'a U) -> Option<LhsValue<'a>> + Send + Sync + 'static> =
             Arc::new(move |ud: &U| Some(getter(ud).into()));
+        let slot = self.lazy_cache_slot_counter;
+        self.lazy_cache_slot_counter += 1;
         self.add_function(name, crate::functions::LazyFieldDefinition {
             return_type: val_type,
             getter: wrapped_getter,
+            cache_slot: Some(slot),
         })
     }
 
@@ -987,6 +995,12 @@ impl<'s> Scheme {
     #[inline]
     pub fn field_count(&self) -> usize {
         self.inner.fields.len()
+    }
+
+    /// Returns the number of lazy cache slots in the [`scheme`](struct@Scheme).
+    #[inline]
+    pub fn lazy_cache_size(&self) -> usize {
+        self.inner.lazy_cache_slot_counter
     }
 
     /// Returns the number of functions in the [`scheme`](struct@Scheme).

@@ -261,6 +261,14 @@ impl ValueExpr for FunctionCallExpr {
             ..
         } = self;
         let map_each_count = args.first().map_or(0, |arg| arg.map_each_count());
+
+        // Check if this function supports caching (e.g., LazyFieldDefinition)
+        let cache_slot = if map_each_count == 0 {
+            function.as_definition().cache_slot()
+        } else {
+            None
+        };
+
         let call = function
             .as_definition()
             .compile(&mut args.iter().map(|arg| arg.into()), context);
@@ -335,6 +343,32 @@ impl ValueExpr for FunctionCallExpr {
                     )
                 })
             }
+        } else if let Some(slot) = cache_slot {
+            // Cached path: check cache before computing.
+            // Cache hit uses `LhsValue::as_ref()` for zero-copy borrowing
+            // (Bytes::Owned → Bytes::Borrowed, Copy types just dereferenced).
+            // Cache miss computes the value, stores it via `into_owned()`,
+            // then borrows from cache with `as_ref()`.
+            CompiledValueExpr::new(move |ctx| {
+                if let Some(cached) = ctx.get_lazy_cache(slot) {
+                    // Zero-copy: create borrowed LhsValue<'e> from &LhsValue<'static>
+                    Ok(cached.as_ref())
+                } else {
+                    let user_data: &(dyn Any + 'static) = ctx.get_user_data();
+                    match call(user_data, &mut args.iter().map(|arg| arg.execute(ctx))) {
+                        Some(value) => {
+                            // Store owned value in cache, then borrow it back
+                            ctx.set_lazy_cache(slot, value.into_owned());
+                            // Borrow from cache for zero-copy return
+                            match ctx.get_lazy_cache(slot) {
+                                Some(cached) => Ok(cached.as_ref()),
+                                None => Err(return_type),
+                            }
+                        }
+                        _ => Err(return_type),
+                    }
+                }
+            })
         } else {
             CompiledValueExpr::new(move |ctx| {
                 let user_data: &(dyn Any + 'static) = ctx.get_user_data();

@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::fmt;
 use std::fmt::Debug;
 use thiserror::Error;
@@ -38,12 +39,25 @@ pub struct InvalidListMatcherError {
 ///
 /// It acts as a map in terms of public API, but provides a constant-time
 /// index-based access to values for a filter during execution.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct ExecutionContext<'e, U = ()> {
     scheme: Scheme,
     values: Box<[Option<LhsValue<'e>>]>,
     list_matchers: Box<[Box<dyn ListMatcher>]>,
     user_data: U,
+    /// Cache for lazy function results, invalidated on `update()` and `clear()`.
+    /// Uses `OnceCell` for safe interior mutability without runtime borrow checks.
+    /// Cache hits return references, enabling zero-copy via `LhsValue::as_ref()`.
+    lazy_cache: Box<[OnceCell<LhsValue<'static>>]>,
+}
+
+impl<'e, U: PartialEq> PartialEq for ExecutionContext<'e, U> {
+    fn eq(&self, other: &Self) -> bool {
+        self.scheme == other.scheme
+            && self.values == other.values
+            && self.list_matchers == other.list_matchers
+            && self.user_data == other.user_data
+    }
 }
 
 impl<'e, U> ExecutionContext<'e, U> {
@@ -69,6 +83,7 @@ impl<'e, U> ExecutionContext<'e, U> {
                 .map(|list| list.definition().new_matcher())
                 .collect(),
             user_data: f(),
+            lazy_cache: (0..scheme.lazy_cache_size()).map(|_| OnceCell::new()).collect(),
         }
     }
 
@@ -205,6 +220,24 @@ impl<'e, U> ExecutionContext<'e, U> {
         &mut self.user_data
     }
 
+    /// Read a cached lazy function result.
+    /// Returns a reference valid for the lifetime of `&self`.
+    /// The caller can use `LhsValue::as_ref()` for zero-copy borrowing.
+    #[inline]
+    pub(crate) fn get_lazy_cache(&self, slot: usize) -> Option<&LhsValue<'static>> {
+        self.lazy_cache.get(slot).and_then(|cell| cell.get())
+    }
+
+    /// Write a lazy function result to cache.
+    /// Accepts any lifetime; `into_owned()` converts to `'static` for storage.
+    /// Silently drops the value if the slot is already occupied.
+    #[inline]
+    pub(crate) fn set_lazy_cache(&self, slot: usize, value: LhsValue<'_>) {
+        if let Some(cell) = self.lazy_cache.get(slot) {
+            let _ = cell.set(value.into_owned());
+        }
+    }
+
     /// Extract all values and list data into a new [`ExecutionContext`].
     #[inline]
     pub fn take_with<T>(self, default: impl Fn(U) -> T) -> ExecutionContext<'e, T> {
@@ -213,6 +246,7 @@ impl<'e, U> ExecutionContext<'e, U> {
             values: self.values,
             list_matchers: self.list_matchers,
             user_data: default(self.user_data),
+            lazy_cache: self.lazy_cache,
         }
     }
 
@@ -230,6 +264,7 @@ impl<'e, U> ExecutionContext<'e, U> {
             values: self.values.clone(),
             list_matchers: self.list_matchers.clone(),
             user_data,
+            lazy_cache: (0..self.lazy_cache.len()).map(|_| OnceCell::new()).collect(),
         }
     }
 
@@ -244,6 +279,9 @@ impl<'e, U> ExecutionContext<'e, U> {
             .iter_mut()
             .for_each(|list_matcher| list_matcher.clear());
         self.user_data = user_data;
+        for cell in self.lazy_cache.iter_mut() {
+            cell.take();
+        }
     }
 
     /// Clears the execution context, removing all values and lists
@@ -254,6 +292,9 @@ impl<'e, U> ExecutionContext<'e, U> {
         self.list_matchers
             .iter_mut()
             .for_each(|list_matcher| list_matcher.clear());
+        for cell in self.lazy_cache.iter_mut() {
+            cell.take();
+        }
     }
 }
 
@@ -270,12 +311,18 @@ impl<'a, 'e, U, T> ExecutionContextGuard<'a, 'e, U, T> {
         let scheme = old.scheme().clone();
         let values = std::mem::take(&mut old.values);
         let list_matchers = std::mem::take(&mut old.list_matchers);
+        // Swap the lazy_cache: old gets an empty one, new takes the original
+        let cache_len = old.lazy_cache.len();
+        let mut lazy_cache: Box<[OnceCell<LhsValue<'static>>]> =
+            (0..cache_len).map(|_| OnceCell::new()).collect();
+        std::mem::swap(&mut old.lazy_cache, &mut lazy_cache);
 
         let new = ExecutionContext {
             scheme,
             values,
             list_matchers,
             user_data,
+            lazy_cache,
         };
 
         Self { old, new }
@@ -300,6 +347,7 @@ impl<U, T> Drop for ExecutionContextGuard<'_, '_, U, T> {
     fn drop(&mut self) {
         self.old.values = std::mem::take(&mut self.new.values);
         self.old.list_matchers = std::mem::take(&mut self.new.list_matchers);
+        std::mem::swap(&mut self.old.lazy_cache, &mut self.new.lazy_cache);
     }
 }
 
@@ -781,4 +829,57 @@ fn test_clear() {
 
     assert_eq!(ctx.get_field_value(bool_field), None);
     assert_eq!(ctx.get_field_value(ip_field), None);
+}
+
+#[test]
+fn test_lazy_cache_round_trip() {
+    use crate::scheme::SchemeBuilder;
+    use crate::types::Type;
+
+    let mut builder = SchemeBuilder::default();
+    builder.add_lazy_field("attack_type", Type::Bytes, |d: &String| LhsValue::from(d.as_str())).unwrap();
+    builder.add_lazy_field_auto("ssl", Type::Bool, |_d: &String| true).unwrap();
+    let scheme = builder.build();
+
+    // Verify cache size
+    assert_eq!(scheme.lazy_cache_size(), 2);
+
+    let mut ctx = ExecutionContext::new_with(&scheme, || String::from("xss"));
+
+    // Initially cache is empty
+    assert!(ctx.get_lazy_cache(0).is_none());
+    assert!(ctx.get_lazy_cache(1).is_none());
+
+    // Write to cache
+    ctx.set_lazy_cache(0, LhsValue::Bytes("xss".into()));
+    ctx.set_lazy_cache(1, LhsValue::Bool(true));
+
+    // Read back — get_lazy_cache returns a reference
+    let cached0 = ctx.get_lazy_cache(0).unwrap();
+    assert_eq!(*cached0, LhsValue::Bytes("xss".into()));
+    let cached1 = ctx.get_lazy_cache(1).unwrap();
+    assert_eq!(*cached1, LhsValue::Bool(true));
+
+    // Clear should empty the cache
+    ctx.clear();
+    assert!(ctx.get_lazy_cache(0).is_none());
+    assert!(ctx.get_lazy_cache(1).is_none());
+}
+
+#[test]
+fn test_lazy_cache_update_clears() {
+    use crate::scheme::SchemeBuilder;
+    use crate::types::Type;
+
+    let mut builder = SchemeBuilder::default();
+    builder.add_lazy_field("val", Type::Int, |_d: &String| LhsValue::Int(42)).unwrap();
+    let scheme = builder.build();
+
+    let mut ctx = ExecutionContext::new_with(&scheme, || String::new());
+    ctx.set_lazy_cache(0, LhsValue::Int(42));
+    let cached = ctx.get_lazy_cache(0).unwrap();
+    assert_eq!(*cached, LhsValue::Int(42));
+
+    ctx.update(String::from("new"));
+    assert!(ctx.get_lazy_cache(0).is_none());
 }
