@@ -58,6 +58,10 @@ pub(crate) const EXPECTED_TYPES: [ExpectedType; 2] =
     [ExpectedType::Array, ExpectedType::Type(Type::Bytes)];
 
 impl FunctionDefinition for ConcatFunction {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn check_param(
         &self,
         _: &ParserSettings,

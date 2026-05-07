@@ -259,10 +259,52 @@ impl ValueExpr for FunctionCallExpr {
             context,
             ..
         } = self;
+        let definition = function.as_definition();
         let map_each_count = args.first().map_or(0, |arg| arg.map_each_count());
-        let call = function
-            .as_definition()
-            .compile(&mut args.iter().map(|arg| arg.into()), context);
+
+        // Normalize both lazy and regular paths into the same typed signature.
+        // For regular functions, the user_data parameter is simply ignored.
+        // For lazy functions, we downcast the FunctionDefinition at compile time
+        // to extract the getter/implementation directly, eliminating runtime downcast.
+        let args_count = args.len();
+        let call: Box<
+            dyn for<'i, 'a> Fn(&'a C::U, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>
+                + Sync
+                + Send
+                + 'static,
+        > = if definition.needs_user_data() {
+            use crate::functions::{LazyFieldDefinition, LazyMethodDefinition};
+
+            if let Some(lazy_field) = definition.as_any().downcast_ref::<LazyFieldDefinition<C::U>>() {
+                let getter = std::sync::Arc::clone(&lazy_field.getter);
+                Box::new(move |ud: &C::U, _args| getter(ud))
+            } else if let Some(lazy_method) = definition.as_any().downcast_ref::<LazyMethodDefinition<C::U>>() {
+                let implementation = std::sync::Arc::clone(&lazy_method.implementation);
+                let provided = lazy_method.params.len();
+                let remaining_opt = &lazy_method.opt_params[args_count.saturating_sub(provided)..];
+                if remaining_opt.is_empty() {
+                    Box::new(move |ud: &C::U, args| implementation(ud, args))
+                } else {
+                    let opt_args: Vec<CompiledValueResult<'static>> = remaining_opt
+                        .iter()
+                        .map(|p| Ok(p.default_value.clone()))
+                        .collect();
+                    Box::new(move |ud: &C::U, args| {
+                        implementation(ud, &mut crate::functions::ExactSizeChain::new(args, opt_args.iter().cloned()))
+                    })
+                }
+            } else {
+                // Fallback for unknown lazy types (still has runtime downcast)
+                let inner = definition
+                    .compile_with_user_data(&mut args.iter().map(|arg| arg.into()), context)
+                    .unwrap();
+                Box::new(move |ud: &C::U, args| inner(ud, args))
+            }
+        } else {
+            let inner = definition.compile(&mut args.iter().map(|arg| arg.into()), context);
+            Box::new(move |_ud: &C::U, args| inner(args))
+        };
+
         let mut args = args
             .into_iter()
             .map(|arg| compiler.compile_function_call_arg_expr(arg))
@@ -272,11 +314,15 @@ impl ValueExpr for FunctionCallExpr {
             let first = args.remove(0);
 
             #[inline(always)]
-            fn compute<'s, 'a, I: ExactSizeIterator<Item = CompiledValueResult<'a>>>(
+            fn compute<'s, 'a, U: 'static, I: ExactSizeIterator<Item = CompiledValueResult<'a>>>(
                 first: CompiledValueResult<'a>,
-                call: &(
-                     dyn for<'b> Fn(FunctionArgs<'_, 'b>) -> Option<LhsValue<'b>> + Sync + Send + 's
-                 ),
+                call: &Box<
+                    dyn for<'b> Fn(&'b U, FunctionArgs<'_, 'b>) -> Option<LhsValue<'b>>
+                        + Sync
+                        + Send
+                        + 's,
+                >,
+                user_data: &'a U,
                 return_type: Type,
                 f: impl Fn(LhsValue<'a>) -> I,
             ) -> CompiledValueResult<'a> {
@@ -286,19 +332,17 @@ impl ValueExpr for FunctionCallExpr {
                         return Err(Type::Array(return_type.into()));
                     }
                 };
-                // Extract the values of the map
                 if let LhsValue::Map(map) = first {
                     first = LhsValue::Array(
                         Array::try_from_iter(map.value_type(), map.into_values()).unwrap(),
                     );
                 }
-                // Retrieve the underlying `Array`
                 let mut first = match first {
                     LhsValue::Array(arr) => arr,
                     _ => unreachable!(),
                 };
                 if !first.is_empty() {
-                    first = first.filter_map_to(return_type, |elem| call(&mut f(elem)));
+                    first = first.filter_map_to(return_type, |elem| call(user_data, &mut f(elem)));
                 }
                 Ok(LhsValue::Array(first))
             }
@@ -308,6 +352,7 @@ impl ValueExpr for FunctionCallExpr {
                     compute(
                         first.execute(ctx),
                         &call,
+                        ctx.get_user_data(),
                         return_type,
                         #[inline]
                         |elem| once(Ok(elem)),
@@ -318,6 +363,7 @@ impl ValueExpr for FunctionCallExpr {
                     compute(
                         first.execute(ctx),
                         &call,
+                        ctx.get_user_data(),
                         return_type,
                         #[inline]
                         |elem| {
@@ -331,7 +377,10 @@ impl ValueExpr for FunctionCallExpr {
             }
         } else {
             CompiledValueExpr::new(move |ctx| {
-                match call(&mut args.iter().map(|arg| arg.execute(ctx))) {
+                match call(
+                    ctx.get_user_data(),
+                    &mut args.iter().map(|arg| arg.execute(ctx)),
+                ) {
                     Some(value) => {
                         debug_assert!(value.get_type() == return_type);
                         Ok(value)

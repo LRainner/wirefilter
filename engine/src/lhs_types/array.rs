@@ -95,11 +95,12 @@ impl<'a> Array<'a> {
         self.data.get(idx)
     }
 
-    pub(crate) fn as_ref(&'a self) -> Array<'a> {
+    /// Creates a borrowed view of this array.
+    pub fn as_ref(&self) -> Array<'_> {
         Array {
             val_type: self.val_type,
-            data: match self.data {
-                InnerArray::Owned(ref vec) => InnerArray::Borrowed(&vec[..]),
+            data: match &self.data {
+                InnerArray::Owned(vec) => InnerArray::Borrowed(vec),
                 InnerArray::Borrowed(slice) => InnerArray::Borrowed(slice),
             },
         }
@@ -482,7 +483,7 @@ impl<'a, V: IntoValue<'a>> TypedArray<'a, V> {
     }
 
     /// Converts the strongly typed array into a borrowed loosely typed array.
-    pub fn as_array(&'a self) -> Array<'a> {
+    pub fn as_array(&self) -> Array<'_> {
         Array {
             val_type: V::TYPE.into(),
             data: InnerArray::Borrowed(self.as_vec_ref()),

@@ -867,6 +867,10 @@ mod tests {
     }
 
     impl FunctionDefinition for FilterFunction {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
         fn check_param(
             &self,
             _: &ParserSettings,
