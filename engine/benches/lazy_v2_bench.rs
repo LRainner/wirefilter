@@ -200,7 +200,7 @@ fn sample_detection() -> DetectionResult {
 }
 
 // ---------------------------------------------------------------------------
-// Eager: 每轮迭代构建 Map + set_field_value
+// Eager
 // ---------------------------------------------------------------------------
 
 fn build_standard_scheme() -> wirefilter::Scheme {
@@ -245,18 +245,6 @@ fn fill_standard(
         LhsValue::Bool(det.ssl()),
     )
         .unwrap();
-    // 每轮构建新 Map，move 进 ctx
-    ctx.set_field_value(scheme.get_field("http.header").unwrap(), Map::from(build_headers()))
-        .unwrap();
-    ctx.set_field_value(scheme.get_field("http.query").unwrap(), Map::from(build_query()))
-        .unwrap();
-}
-
-// 只更新 Map 字段（部分更新）
-fn update_standard_maps(
-    ctx: &mut ExecutionContext<'static, ()>,
-    scheme: &wirefilter::Scheme,
-) {
     ctx.set_field_value(scheme.get_field("http.header").unwrap(), Map::from(build_headers()))
         .unwrap();
     ctx.set_field_value(scheme.get_field("http.query").unwrap(), Map::from(build_query()))
@@ -264,7 +252,7 @@ fn update_standard_maps(
 }
 
 // ---------------------------------------------------------------------------
-// Lazy: 每轮迭代构建 DetectionResult + move 进 user_data
+// Lazy
 // ---------------------------------------------------------------------------
 
 fn build_lazy_scheme() -> wirefilter::Scheme {
@@ -372,13 +360,12 @@ fn build_lazy_scheme() -> wirefilter::Scheme {
 }
 
 // ===========================================================================
-// Benchmark 1: 完整请求生命周期 — 构建 + 更新 + 执行
-// 两者都包含构建成本（模拟 HTTP 解析器产出数据）
-// eager: clear → build Map + fill → execute
-// lazy:  build DetectionResult + move → execute
+// Benchmark 1: 新请求 — 一次构建 + 一次执行
+// 模拟: 每个 HTTP 请求到来，构建数据 → 执行一条规则
+// 两者都包含构建成本
 // ===========================================================================
 
-fn bench_full_workflow(c: &mut Criterion) {
+fn bench_new_request(c: &mut Criterion) {
     let std_scheme = build_standard_scheme();
     let std_rule = r#"attack_type == "xss" && any(http.header["user-agent"][*] contains "Chrome") && ssl && tcp.port == 443"#;
     let std_filter: Filter<()> = std_scheme.parse(std_rule).unwrap().compile();
@@ -390,7 +377,7 @@ fn bench_full_workflow(c: &mut Criterion) {
         .unwrap()
         .compile_with_compiler(&mut DefaultCompiler::<DetectionResult>::new());
 
-    let mut group = c.benchmark_group("full_workflow");
+    let mut group = c.benchmark_group("new_request");
 
     group.bench_function("eager_build_fill_execute", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
@@ -403,10 +390,10 @@ fn bench_full_workflow(c: &mut Criterion) {
     });
 
     group.bench_function("lazy_build_update_execute", |b| {
-        let mut ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+        let ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+        let det = sample_detection();
         b.iter(|| {
-            *ctx.get_user_data_mut() = sample_detection();
-            lazy_filter.execute(&ctx).unwrap();
+            lazy_filter.execute_with(&ctx, &det).unwrap();
         });
     });
 
@@ -414,12 +401,129 @@ fn bench_full_workflow(c: &mut Criterion) {
 }
 
 // ===========================================================================
-// Benchmark 2: 部分更新 — 只更新 headers/query
-// eager: build Map + set_field_value → execute
-// lazy:  build TypedMap + assign fields → execute
+// Benchmark 2: 复用请求结构 — 构建一次，执行 N 条规则
+// 模拟: HTTP 请求解析一次，对同一请求执行 100 条规则
+// 这是最常见的 WAF 场景
 // ===========================================================================
 
-fn bench_partial_update(c: &mut Criterion) {
+fn bench_reuse_100_rules(c: &mut Criterion) {
+    let std_scheme = build_standard_scheme();
+    let std_rules: Vec<String> = (0..100).map(|i| {
+        let attack_types = ["sql_injection", "rce", "xxe", "ssrf", "lfi", "rfi", "command_injection", "path_traversal"];
+        let paths = ["/admin", "/login", "/api/users", "/upload", "/config", "/debug", "/console", "/graphql"];
+        let methods = ["POST", "PUT", "DELETE", "PATCH"];
+        let uas = ["sqlmap", "nikto", "nmap", "dirbuster", "wfuzz", "gobuster", "masscan", "zgrab"];
+        let query_keys = ["id", "page"];
+        format!(
+            r#"attack_type == "{}" && http.path contains "{}" && http.method == "{}" && any(http.header["user-agent"][*] contains "{}") && any(http.query["{}"][*] contains "evil")"#,
+            attack_types[i % 8], paths[i % 8], methods[i % 4], uas[i % 8], query_keys[i % 2]
+        )
+    }).collect();
+    let std_filters: Vec<_> = std_rules.iter()
+        .map(|r| std_scheme.parse(r).unwrap().compile())
+        .collect();
+
+    let lazy_scheme = build_lazy_scheme();
+    let lazy_rules: Vec<String> = (0..100).map(|i| {
+        let attack_types = ["sql_injection", "rce", "xxe", "ssrf", "lfi", "rfi", "command_injection", "path_traversal"];
+        let paths = ["/admin", "/login", "/api/users", "/upload", "/config", "/debug", "/console", "/graphql"];
+        let methods = ["POST", "PUT", "DELETE", "PATCH"];
+        let uas = ["sqlmap", "nikto", "nmap", "dirbuster", "wfuzz", "gobuster", "masscan", "zgrab"];
+        let query_keys = ["id", "page"];
+        format!(
+            r#"attack_type() == "{}" && http.path() contains "{}" && http.method() == "{}" && any(http.header("user-agent")[*] contains "{}") && any(http.query("{}")[*] contains "evil")"#,
+            attack_types[i % 8], paths[i % 8], methods[i % 4], uas[i % 8], query_keys[i % 2]
+        )
+    }).collect();
+    let lazy_filters: Vec<_> = lazy_rules.iter()
+        .map(|r| lazy_scheme.parse(r).unwrap()
+            .compile_with_compiler(&mut DefaultCompiler::<DetectionResult>::new()))
+        .collect();
+
+    let mut group = c.benchmark_group("reuse_100_rules");
+
+    // Eager: 构建一次 → 执行 100 条规则
+    group.bench_function("eager_fill_execute_100", |b| {
+        let mut ctx = ExecutionContext::<()>::new(&std_scheme);
+        let det = sample_detection();
+        b.iter(|| {
+            ctx.clear();
+            fill_standard(&mut ctx, &std_scheme, &det);
+            for filter in &std_filters {
+                if filter.execute(&ctx).unwrap() {
+                    break;
+                }
+            }
+        });
+    });
+
+    // Lazy: 构建一次 → 执行 100 条规则
+    group.bench_function("lazy_update_execute_100", |b| {
+        let ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+        let det = sample_detection();
+        b.iter(|| {
+            for filter in &lazy_filters {
+                if filter.execute_with(&ctx, &det).unwrap() {
+                    break;
+                }
+            }
+        });
+    });
+
+    group.finish();
+}
+
+// ===========================================================================
+// Benchmark 3: 部分字段更新 — 只改 payload，执行一条规则
+// 模拟: 同一 HTTP 请求，body 流式到达，payload 更新后重新检测
+// HTTP 结构 (headers/query/method/path) 不变
+// ===========================================================================
+
+fn bench_partial_field_update(c: &mut Criterion) {
+    let std_scheme = build_standard_scheme();
+    let std_rule = r#"attack_type == "xss" && payload contains "<script>" && ssl && tcp.port == 443"#;
+    let std_filter: Filter<()> = std_scheme.parse(std_rule).unwrap().compile();
+
+    let lazy_scheme = build_lazy_scheme();
+    let lazy_rule = r#"attack_type() == "xss" && payload() contains "<script>" && ssl() && tcp.port() == 443"#;
+    let lazy_filter: Filter<DetectionResult> = lazy_scheme
+        .parse(lazy_rule)
+        .unwrap()
+        .compile_with_compiler(&mut DefaultCompiler::<DetectionResult>::new());
+
+    let mut group = c.benchmark_group("partial_field_update");
+
+    // Eager: 只更新 payload 字段
+    group.bench_function("eager_update_payload_execute", |b| {
+        let mut ctx = ExecutionContext::<()>::new(&std_scheme);
+        let det = sample_detection();
+        fill_standard(&mut ctx, &std_scheme, &det);
+        let payload_field = std_scheme.get_field("payload").unwrap();
+        b.iter(|| {
+            ctx.set_field_value(payload_field, r#"<script>alert(1)</script>"#).unwrap();
+            std_filter.execute(&ctx).unwrap();
+        });
+    });
+
+    // Lazy: 只更新 payload 字段，headers/query 等 HTTP 结构不变
+    group.bench_function("lazy_update_payload_execute", |b| {
+        let ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+        let mut det = sample_detection();
+        b.iter(|| {
+            det.payload = r#"<script>alert(1)</script>"#;
+            lazy_filter.execute_with(&ctx, &det).unwrap();
+        });
+    });
+
+    group.finish();
+}
+
+// ===========================================================================
+// Benchmark 4: 部分字段更新 — 只改 headers/query Map 字段
+// 模拟: HTTP pipeline 中 header 变化（如 X-Forwarded-For 追加）
+// ===========================================================================
+
+fn bench_partial_map_update(c: &mut Criterion) {
     let std_scheme = build_standard_scheme();
     let std_rule = r#"attack_type == "xss" && any(http.header["user-agent"][*] contains "Chrome") && ssl && tcp.port == 443"#;
     let std_filter: Filter<()> = std_scheme.parse(std_rule).unwrap().compile();
@@ -431,25 +535,30 @@ fn bench_partial_update(c: &mut Criterion) {
         .unwrap()
         .compile_with_compiler(&mut DefaultCompiler::<DetectionResult>::new());
 
-    let mut group = c.benchmark_group("partial_update");
+    let mut group = c.benchmark_group("partial_map_update");
 
-    group.bench_function("eager_build_maps_execute", |b| {
+    // Eager: 只更新 Map 字段（构建新 Map + set_field_value）
+    group.bench_function("eager_update_maps_execute", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
         let det = sample_detection();
         fill_standard(&mut ctx, &std_scheme, &det);
+        let hdr_field = std_scheme.get_field("http.header").unwrap();
+        let q_field = std_scheme.get_field("http.query").unwrap();
         b.iter(|| {
-            update_standard_maps(&mut ctx, &std_scheme);
+            ctx.set_field_value(hdr_field, Map::from(build_headers())).unwrap();
+            ctx.set_field_value(q_field, Map::from(build_query())).unwrap();
             std_filter.execute(&ctx).unwrap();
         });
     });
 
-    group.bench_function("lazy_build_maps_execute", |b| {
-        let mut ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+    // Lazy: 只更新 headers/query 字段（构建新 TypedMap + assign）
+    group.bench_function("lazy_update_maps_execute", |b| {
+        let ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+        let mut det = sample_detection();
         b.iter(|| {
-            let ud = ctx.get_user_data_mut();
-            ud.headers = build_headers();
-            ud.query = build_query();
-            lazy_filter.execute(&ctx).unwrap();
+            det.headers = build_headers();
+            det.query = build_query();
+            lazy_filter.execute_with(&ctx, &det).unwrap();
         });
     });
 
@@ -457,73 +566,26 @@ fn bench_partial_update(c: &mut Criterion) {
 }
 
 // ===========================================================================
-// Benchmark 3: 仅更新开销 — 不执行
-// ===========================================================================
-
-fn bench_update_only(c: &mut Criterion) {
-    let std_scheme = build_standard_scheme();
-    let lazy_scheme = build_lazy_scheme();
-
-    let mut group = c.benchmark_group("update_only");
-
-    group.bench_function("eager_clear_fill", |b| {
-        let mut ctx = ExecutionContext::<()>::new(&std_scheme);
-        let det = sample_detection();
-        b.iter(|| {
-            ctx.clear();
-            fill_standard(&mut ctx, &std_scheme, &det);
-        });
-    });
-
-    group.bench_function("lazy_build_update", |b| {
-        let mut ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
-        b.iter(|| {
-            *ctx.get_user_data_mut() = sample_detection();
-        });
-    });
-
-    group.bench_function("eager_build_maps", |b| {
-        let mut ctx = ExecutionContext::<()>::new(&std_scheme);
-        let det = sample_detection();
-        fill_standard(&mut ctx, &std_scheme, &det);
-        b.iter(|| {
-            update_standard_maps(&mut ctx, &std_scheme);
-        });
-    });
-
-    group.bench_function("lazy_build_maps", |b| {
-        let mut ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
-        b.iter(|| {
-            let ud = ctx.get_user_data_mut();
-            ud.headers = build_headers();
-            ud.query = build_query();
-        });
-    });
-
-    group.finish();
-}
-
-// ===========================================================================
-// Benchmark 4: execute_only — ctx 预填好，只测执行开销
+// Benchmark 5: 纯执行开销 — ctx 预填好，只测执行
+// 模拟: 数据已就位，多次执行同一规则
 // ===========================================================================
 
 fn bench_execute_only(c: &mut Criterion) {
     let std_scheme = build_standard_scheme();
-    let std_rule =
-        r#"attack_type == "xss" && any(http.header["user-agent"][*] contains "Chrome") && ssl && tcp.port == 443"#;
+    let std_rule = r#"attack_type == "xss" && any(http.header["user-agent"][*] contains "Chrome") && ssl && tcp.port == 443"#;
     let std_filter: Filter<()> = std_scheme.parse(std_rule).unwrap().compile();
     let det = sample_detection();
     let mut std_ctx = ExecutionContext::<()>::new(&std_scheme);
     fill_standard(&mut std_ctx, &std_scheme, &det);
 
     let lazy_scheme = build_lazy_scheme();
-    let lazy_rule =
-        r#"attack_type() == "xss" && any(http.header("user-agent")[*] contains "Chrome") && ssl() && tcp.port() == 443"#;
+    let lazy_rule = r#"attack_type() == "xss" && any(http.header("user-agent")[*] contains "Chrome") && ssl() && tcp.port() == 443"#;
     let lazy_filter: Filter<DetectionResult> = lazy_scheme
         .parse(lazy_rule)
         .unwrap()
         .compile_with_compiler(&mut DefaultCompiler::<DetectionResult>::new());
     let lazy_ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+    let det = sample_detection();
 
     let mut group = c.benchmark_group("execute_only");
 
@@ -532,16 +594,16 @@ fn bench_execute_only(c: &mut Criterion) {
     });
 
     group.bench_function("lazy", |b| {
-        b.iter(|| lazy_filter.execute(&lazy_ctx).unwrap());
+        b.iter(|| lazy_filter.execute_with(&lazy_ctx, &det).unwrap());
     });
 
     group.finish();
 }
 
 // ===========================================================================
-// Benchmark 5: 短路求值 — lazy 最大优势场景
-// 规则在第一个条件就失败，lazy 不计算后续字段
-// eager 仍然必须构建并填充所有字段（包括昂贵的 Map）
+// Benchmark 6: 短路求值 — 规则第一个条件就失败
+// Eager: 仍然必须填充所有字段（包括 Map）
+// Lazy:  只调用 attack_type() getter，header/query getter 不触发
 // ===========================================================================
 
 fn bench_short_circuit(c: &mut Criterion) {
@@ -558,7 +620,7 @@ fn bench_short_circuit(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("short_circuit");
 
-    // Eager: must build + fill ALL fields including Map, even though rule fails at first condition
+    // Eager: 构建 + 填充所有字段（Map 必须构建），然后执行失败
     group.bench_function("eager_build_fill_fail", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
         let det = sample_detection();
@@ -569,13 +631,13 @@ fn bench_short_circuit(c: &mut Criterion) {
         });
     });
 
-    // Lazy: build DetectionResult + move + execute.
-    // Only attack_type() getter is called — header/query never touched.
-    group.bench_function("lazy_build_execute_fail", |b| {
-        let mut ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+    // Lazy: 构建 DetectionResult 一次 + 执行失败
+    // wirefilter 只调用 attack_type()，不调用 header/query getter
+    group.bench_function("lazy_build_update_fail", |b| {
+        let ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+        let det = sample_detection();
         b.iter(|| {
-            *ctx.get_user_data_mut() = sample_detection();
-            lazy_filter.execute(&ctx).unwrap();
+            lazy_filter.execute_with(&ctx, &det).unwrap();
         });
     });
 
@@ -583,107 +645,38 @@ fn bench_short_circuit(c: &mut Criterion) {
 }
 
 // ===========================================================================
-// Benchmark 6: 100 条规则
+// Benchmark 7: 短路求值 — 数据预填好，只测执行短路
+// 数据已就位，eager 已填好所有字段，lazy 已 move DetectionResult
+// 只测"执行时"的短路优势
 // ===========================================================================
 
-fn generate_100_rules() -> Vec<String> {
-    let attack_types = [
-        "sql_injection", "rce", "xxe", "ssrf", "lfi", "rfi",
-        "command_injection", "path_traversal",
-    ];
-    let paths = [
-        "/admin", "/login", "/api/users", "/upload",
-        "/config", "/debug", "/console", "/graphql",
-    ];
-    let methods = ["POST", "PUT", "DELETE", "PATCH"];
-    let uas = [
-        "sqlmap", "nikto", "nmap", "dirbuster",
-        "wfuzz", "gobuster", "masscan", "zgrab",
-    ];
-    let query_keys = ["id", "page"];
-
-    (0..100)
-        .map(|i| {
-            format!(
-                r#"attack_type == "{}" && http.path contains "{}" && http.method == "{}" && any(http.header["user-agent"][*] contains "{}") && any(http.query["{}"][*] contains "evil")"#,
-                attack_types[i % 8], paths[i % 8], methods[i % 4], uas[i % 8], query_keys[i % 2]
-            )
-        })
-        .collect()
-}
-
-fn generate_100_lazy_rules() -> Vec<String> {
-    let attack_types = [
-        "sql_injection", "rce", "xxe", "ssrf", "lfi", "rfi",
-        "command_injection", "path_traversal",
-    ];
-    let paths = [
-        "/admin", "/login", "/api/users", "/upload",
-        "/config", "/debug", "/console", "/graphql",
-    ];
-    let methods = ["POST", "PUT", "DELETE", "PATCH"];
-    let uas = [
-        "sqlmap", "nikto", "nmap", "dirbuster",
-        "wfuzz", "gobuster", "masscan", "zgrab",
-    ];
-    let query_keys = ["id", "page"];
-
-    (0..100)
-        .map(|i| {
-            format!(
-                r#"attack_type() == "{}" && http.path() contains "{}" && http.method() == "{}" && any(http.header("user-agent")[*] contains "{}") && any(http.query("{}")[*] contains "evil")"#,
-                attack_types[i % 8], paths[i % 8], methods[i % 4], uas[i % 8], query_keys[i % 2]
-            )
-        })
-        .collect()
-}
-
-fn bench_100_rules(c: &mut Criterion) {
+fn bench_short_circuit_execute(c: &mut Criterion) {
     let std_scheme = build_standard_scheme();
-    let std_rules = generate_100_rules();
-    let std_filters: Vec<_> = std_rules
-        .iter()
-        .map(|r| std_scheme.parse(r).unwrap().compile())
-        .collect();
+    let std_rule = r#"attack_type == "nonexistent" && any(http.header["user-agent"][*] contains "Chrome") && any(http.query["id"][*] contains "evil")"#;
+    let std_filter: Filter<()> = std_scheme.parse(std_rule).unwrap().compile();
+    let det = sample_detection();
+    let mut std_ctx = ExecutionContext::<()>::new(&std_scheme);
+    fill_standard(&mut std_ctx, &std_scheme, &det);
 
     let lazy_scheme = build_lazy_scheme();
-    let lazy_rules = generate_100_lazy_rules();
-    let lazy_filters: Vec<_> = lazy_rules
-        .iter()
-        .map(|r| {
-            lazy_scheme
-                .parse(r)
-                .unwrap()
-                .compile_with_compiler(&mut DefaultCompiler::<DetectionResult>::new())
-        })
-        .collect();
+    let lazy_rule = r#"attack_type() == "nonexistent" && any(http.header("user-agent")[*] contains "Chrome") && any(http.query("id")[*] contains "evil")"#;
+    let lazy_filter: Filter<DetectionResult> = lazy_scheme
+        .parse(lazy_rule)
+        .unwrap()
+        .compile_with_compiler(&mut DefaultCompiler::<DetectionResult>::new());
+    let lazy_ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
+    let det = sample_detection();
 
-    let mut group = c.benchmark_group("100_rules");
+    let mut group = c.benchmark_group("short_circuit_execute");
 
-    group.bench_function("eager_build_fill_execute", |b| {
-        let mut ctx = ExecutionContext::<()>::new(&std_scheme);
-        let det = sample_detection();
-        b.iter(|| {
-            ctx.clear();
-            fill_standard(&mut ctx, &std_scheme, &det);
-            for filter in &std_filters {
-                if filter.execute(&ctx).unwrap() {
-                    break;
-                }
-            }
-        });
+    // Eager: 所有字段已填好，执行时第一个条件失败但 Map 已在 ctx 中
+    group.bench_function("eager_fail", |b| {
+        b.iter(|| std_filter.execute(&std_ctx).unwrap());
     });
 
-    group.bench_function("lazy_build_execute", |b| {
-        let mut ctx = ExecutionContext::new_with(&lazy_scheme, || sample_detection());
-        b.iter(|| {
-            *ctx.get_user_data_mut() = sample_detection();
-            for filter in &lazy_filters {
-                if filter.execute(&ctx).unwrap() {
-                    break;
-                }
-            }
-        });
+    // Lazy: 只调用 attack_type() getter，header/query getter 不触发
+    group.bench_function("lazy_fail", |b| {
+        b.iter(|| lazy_filter.execute_with(&lazy_ctx, &det).unwrap());
     });
 
     group.finish();
@@ -693,11 +686,12 @@ criterion_group! {
     name = lazy_v2_benchmarks;
     config = Criterion::default();
     targets =
-        bench_full_workflow,
-        bench_partial_update,
-        bench_update_only,
+        bench_new_request,
+        bench_reuse_100_rules,
+        bench_partial_field_update,
+        bench_partial_map_update,
         bench_execute_only,
         bench_short_circuit,
-        bench_100_rules,
+        bench_short_circuit_execute,
 }
 criterion_main!(lazy_v2_benchmarks);

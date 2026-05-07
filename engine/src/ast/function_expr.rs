@@ -58,7 +58,7 @@ impl ValueExpr for FunctionCallArgExpr {
         match self {
             FunctionCallArgExpr::IndexExpr(index_expr) => compiler.compile_index_expr(index_expr),
             FunctionCallArgExpr::Literal(literal) => {
-                CompiledValueExpr::new(move |_| LhsValue::from(literal.clone()).into())
+                CompiledValueExpr::new(move |_, _| LhsValue::from(literal.clone()).into())
             }
             // The function argument is an expression compiled as either an
             // CompiledExpr::One or CompiledExpr::Vec.
@@ -68,9 +68,9 @@ impl ValueExpr for FunctionCallArgExpr {
                 let compiled_expr = compiler.compile_logical_expr(logical_expr);
                 match compiled_expr {
                     CompiledExpr::One(expr) => {
-                        CompiledValueExpr::new(move |ctx| LhsValue::from(expr.execute(ctx)).into())
+                        CompiledValueExpr::new(move |ctx, _ud| LhsValue::from(expr.execute(ctx)).into())
                     }
-                    CompiledExpr::Vec(expr) => CompiledValueExpr::new(move |ctx| {
+                    CompiledExpr::Vec(expr) => CompiledValueExpr::new(move |ctx, _ud| {
                         let result = expr.execute(ctx);
                         LhsValue::Array(result.into()).into()
                     }),
@@ -348,22 +348,22 @@ impl ValueExpr for FunctionCallExpr {
             }
 
             if args.is_empty() {
-                CompiledValueExpr::new(move |ctx| {
+                CompiledValueExpr::new(move |ctx, ud| {
                     compute(
                         first.execute(ctx),
                         &call,
-                        ctx.get_user_data(),
+                        ud,
                         return_type,
                         #[inline]
                         |elem| once(Ok(elem)),
                     )
                 })
             } else {
-                CompiledValueExpr::new(move |ctx| {
+                CompiledValueExpr::new(move |ctx, ud| {
                     compute(
                         first.execute(ctx),
                         &call,
-                        ctx.get_user_data(),
+                        ud,
                         return_type,
                         #[inline]
                         |elem| {
@@ -376,9 +376,9 @@ impl ValueExpr for FunctionCallExpr {
                 })
             }
         } else {
-            CompiledValueExpr::new(move |ctx| {
+            CompiledValueExpr::new(move |ctx, ud| {
                 match call(
-                    ctx.get_user_data(),
+                    ud,
                     &mut args.iter().map(|arg| arg.execute(ctx)),
                 ) {
                     Some(value) => {

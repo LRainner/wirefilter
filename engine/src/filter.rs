@@ -12,7 +12,7 @@ use crate::types::{LhsValue, Type};
 use std::fmt;
 
 type BoxedClosureToOneBool<U> =
-    Box<dyn for<'e> Fn(&'e ExecutionContext<'e, U>) -> bool + Sync + Send + 'static>;
+    Box<dyn for<'e> Fn(&'e ExecutionContext<'e, U>, &'e U) -> bool + Sync + Send + 'static>;
 
 /// Boxed closure for [`crate::Expr`] AST node that evaluates to a simple [`bool`].
 pub struct CompiledOneExpr<U = ()>(BoxedClosureToOneBool<U>);
@@ -28,14 +28,19 @@ impl<U> fmt::Debug for CompiledOneExpr<U> {
 impl<U> CompiledOneExpr<U> {
     /// Creates a compiled expression IR from a generic closure.
     pub fn new(
-        closure: impl for<'e> Fn(&'e ExecutionContext<'e, U>) -> bool + Sync + Send + 'static,
+        closure: impl for<'e> Fn(&'e ExecutionContext<'e, U>, &'e U) -> bool + Sync + Send + 'static,
     ) -> Self {
         CompiledOneExpr(Box::new(closure))
     }
 
     /// Executes the closure against a provided context with values.
     pub fn execute<'e>(&self, ctx: &'e ExecutionContext<'e, U>) -> bool {
-        self.0(ctx)
+        (self.0)(ctx, ctx.get_user_data())
+    }
+
+    /// Executes the closure with an explicit user_data reference.
+    pub fn execute_with<'e>(&self, ctx: &'e ExecutionContext<'e, U>, ud: &'e U) -> bool {
+        (self.0)(ctx, ud)
     }
 
     /// Extracts the underlying boxed closure.
@@ -47,7 +52,7 @@ impl<U> CompiledOneExpr<U> {
 pub(crate) type CompiledVecExprResult = TypedArray<'static, bool>;
 
 type BoxedClosureToVecBool<U> = Box<
-    dyn for<'e> Fn(&'e ExecutionContext<'e, U>) -> CompiledVecExprResult + Sync + Send + 'static,
+    dyn for<'e> Fn(&'e ExecutionContext<'e, U>, &'e U) -> CompiledVecExprResult + Sync + Send + 'static,
 >;
 
 /// Boxed closure for [`crate::Expr`] AST node that evaluates to a list of [`bool`].
@@ -64,7 +69,7 @@ impl<U> fmt::Debug for CompiledVecExpr<U> {
 impl<U> CompiledVecExpr<U> {
     /// Creates a compiled expression IR from a generic closure.
     pub fn new(
-        closure: impl for<'e> Fn(&'e ExecutionContext<'e, U>) -> CompiledVecExprResult
+        closure: impl for<'e> Fn(&'e ExecutionContext<'e, U>, &'e U) -> CompiledVecExprResult
         + Sync
         + Send
         + 'static,
@@ -74,7 +79,12 @@ impl<U> CompiledVecExpr<U> {
 
     /// Executes the closure against a provided context with values.
     pub fn execute<'e>(&self, ctx: &'e ExecutionContext<'e, U>) -> CompiledVecExprResult {
-        self.0(ctx)
+        (self.0)(ctx, ctx.get_user_data())
+    }
+
+    /// Executes the closure with an explicit user_data reference.
+    pub fn execute_with<'e>(&self, ctx: &'e ExecutionContext<'e, U>, ud: &'e U) -> CompiledVecExprResult {
+        (self.0)(ctx, ud)
     }
 
     /// Extracts the underlying boxed closure.
@@ -128,7 +138,7 @@ impl From<Type> for CompiledValueResult<'_> {
 }
 
 type BoxedClosureToValue<U> = Box<
-    dyn for<'e> Fn(&'e ExecutionContext<'e, U>) -> CompiledValueResult<'e> + Sync + Send + 'static,
+    dyn for<'e> Fn(&'e ExecutionContext<'e, U>, &'e U) -> CompiledValueResult<'e> + Sync + Send + 'static,
 >;
 
 /// Boxed closure for [`crate::ValueExpr`] AST node that evaluates to an [`LhsValue`].
@@ -145,7 +155,7 @@ impl<U> fmt::Debug for CompiledValueExpr<U> {
 impl<U> CompiledValueExpr<U> {
     /// Creates a compiled expression IR from a generic closure.
     pub fn new(
-        closure: impl for<'e> Fn(&'e ExecutionContext<'e, U>) -> CompiledValueResult<'e>
+        closure: impl for<'e> Fn(&'e ExecutionContext<'e, U>, &'e U) -> CompiledValueResult<'e>
         + Sync
         + Send
         + 'static,
@@ -155,7 +165,12 @@ impl<U> CompiledValueExpr<U> {
 
     /// Executes the closure against a provided context with values.
     pub fn execute<'e>(&self, ctx: &'e ExecutionContext<'e, U>) -> CompiledValueResult<'e> {
-        self.0(ctx)
+        (self.0)(ctx, ctx.get_user_data())
+    }
+
+    /// Executes the closure with an explicit user_data reference.
+    pub fn execute_with<'e>(&self, ctx: &'e ExecutionContext<'e, U>, ud: &'e U) -> CompiledValueResult<'e> {
+        (self.0)(ctx, ud)
     }
 
     /// Extracts the underlying boxed closure.
@@ -210,6 +225,19 @@ impl<U> Filter<U> {
             Err(SchemeMismatchError)
         }
     }
+
+    /// Executes a compiled filter expression with an explicit user_data reference.
+    pub fn execute_with<'e>(
+        &self,
+        ctx: &'e ExecutionContext<'e, U>,
+        user_data: &'e U,
+    ) -> Result<bool, SchemeMismatchError> {
+        if ctx.scheme() == &self.scheme {
+            Ok(self.root_expr.execute_with(ctx, user_data))
+        } else {
+            Err(SchemeMismatchError)
+        }
+    }
 }
 
 /// An IR for a compiled value expression.
@@ -231,6 +259,19 @@ impl<U> FilterValue<U> {
     ) -> Result<Result<LhsValue<'e>, Type>, SchemeMismatchError> {
         if ctx.scheme() == &self.scheme {
             Ok(self.root_expr.execute(ctx))
+        } else {
+            Err(SchemeMismatchError)
+        }
+    }
+
+    /// Executes a compiled value expression with an explicit user_data reference.
+    pub fn execute_with<'e>(
+        &self,
+        ctx: &'e ExecutionContext<'e, U>,
+        user_data: &'e U,
+    ) -> Result<Result<LhsValue<'e>, Type>, SchemeMismatchError> {
+        if ctx.scheme() == &self.scheme {
+            Ok(self.root_expr.execute_with(ctx, user_data))
         } else {
             Err(SchemeMismatchError)
         }
