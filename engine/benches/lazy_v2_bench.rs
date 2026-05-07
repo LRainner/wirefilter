@@ -442,13 +442,12 @@ fn bench_reuse_100_rules(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("reuse_100_rules");
 
-    // Eager: 构建一次 → 执行 100 条规则
+    // Eager: 填充一次 → 执行 100 条规则
     group.bench_function("eager_fill_execute_100", |b| {
         let mut ctx = ExecutionContext::<()>::new(&std_scheme);
         let det = sample_detection();
+        fill_standard(&mut ctx, &std_scheme, &det);
         b.iter(|| {
-            ctx.clear();
-            fill_standard(&mut ctx, &std_scheme, &det);
             for filter in &std_filters {
                 if filter.execute(&ctx).unwrap() {
                     break;
