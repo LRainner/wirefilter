@@ -98,7 +98,7 @@ pub use self::filter::{
 pub use self::functions::{
     AllFunction, AnyFunction, ConcatFunction, FunctionArgInvalidConstantError, FunctionArgKind,
     FunctionArgKindMismatchError, FunctionArgs, FunctionDefinition, FunctionDefinitionContext,
-    FunctionParam, FunctionParamError, LazyFieldDefinition, LazyMethodDefinition,
+    FunctionParam, FunctionParamError, LazyMethodDefinition,
     SimpleFunctionArgKind, SimpleFunctionDefinition, SimpleFunctionImpl, SimpleFunctionOptParam,
     SimpleFunctionParam,
 };

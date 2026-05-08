@@ -1,6 +1,6 @@
 use crate::ast::parse::{FilterParser, ParseError, ParserSettings};
 use crate::ast::{FilterAst, FilterValueAst};
-use crate::functions::{FunctionDefinition, LazyFieldDefinition, LazyMethodDefinition};
+use crate::functions::{FunctionDefinition, LazyMethodDefinition};
 use crate::lex::{Lex, LexErrorKind, LexResult, LexWith, expect, span, take_while};
 use crate::list_matcher::ListDefinition;
 use crate::types::{GetType, LhsValue, RhsValue, Type};
@@ -728,25 +728,6 @@ impl SchemeBuilder {
                 Ok(())
             }
         }
-    }
-
-    /// Registers a lazy field that reads its value from user_data at execution time.
-    ///
-    /// The getter is only called when a rule references this field.
-    /// Rule syntax: `field_name()` (e.g., `http.path()`).
-    pub fn add_lazy_field<U: 'static, N: AsRef<str>>(
-        &mut self,
-        name: N,
-        val_type: Type,
-        getter: impl for<'a> Fn(&'a U) -> Option<LhsValue<'a>> + Send + Sync + 'static,
-    ) -> Result<(), IdentifierRedefinitionError> {
-        self.add_function(
-            name,
-            LazyFieldDefinition {
-                return_type: val_type,
-                getter: Arc::new(getter),
-            },
-        )
     }
 
     /// Registers a lazy method that receives user_data and function args at execution time.

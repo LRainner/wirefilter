@@ -431,87 +431,9 @@ pub trait FunctionDefinition: Debug + Send + Sync + 'static {
 
 use std::sync::Arc;
 
-/// A zero-arg lazy field function that reads its value from user_data.
-///
-/// Registered via [`SchemeBuilder::add_lazy_field`](crate::SchemeBuilder::add_lazy_field).
-/// The rule syntax is `field_name()` (e.g., `http.path()`).
-/// The getter is only called when the rule actually references this field.
-pub struct LazyFieldDefinition<U: 'static> {
-    /// The type of value returned by this lazy field.
-    pub return_type: Type,
-    /// The getter function that reads the field value from user_data.
-    pub getter: Arc<dyn for<'a> Fn(&'a U) -> Option<LhsValue<'a>> + Send + Sync + 'static>,
-}
-
-impl<U: 'static> Debug for LazyFieldDefinition<U> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LazyFieldDefinition")
-            .field("return_type", &self.return_type)
-            .finish()
-    }
-}
-
-impl<U: 'static> FunctionDefinition for LazyFieldDefinition<U> {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn check_param(
-        &self,
-        _settings: &ParserSettings,
-        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
-        _next_param: &FunctionParam<'_>,
-        _ctx: Option<&mut FunctionDefinitionContext>,
-    ) -> Result<(), FunctionParamError> {
-        Err(FunctionParamError::InvalidConstant(FunctionArgInvalidConstantError::new(
-            "lazy field takes no arguments".into(),
-        )))
-    }
-
-    fn return_type(
-        &self,
-        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
-        _ctx: Option<&FunctionDefinitionContext>,
-    ) -> Type {
-        self.return_type
-    }
-
-    fn arg_count(&self) -> (usize, Option<usize>) {
-        (0, Some(0))
-    }
-
-    fn needs_user_data(&self) -> bool {
-        true
-    }
-
-    fn compile(
-        &self,
-        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
-        _ctx: Option<FunctionDefinitionContext>,
-    ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
-    {
-        unreachable!("LazyFieldDefinition should use compile_with_user_data")
-    }
-
-    fn compile_with_user_data(
-        &self,
-        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
-        _ctx: Option<FunctionDefinitionContext>,
-    ) -> Option<Box<dyn for<'i, 'a> Fn(&'a dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>>
-    {
-        let getter = Arc::clone(&self.getter);
-        Some(Box::new(move |user_data, _args| {
-            let ud = user_data.downcast_ref::<U>().expect(
-                "LazyFieldDefinition: user_data type mismatch",
-            );
-            getter(ud)
-        }))
-    }
-}
-
 /// A multi-argument lazy method that reads from user_data.
 ///
-/// Like [`LazyFieldDefinition`] but with parameters.
+/// A lazy method that reads from user_data with parameters.
 /// Registered via [`SchemeBuilder::add_lazy_method`](crate::SchemeBuilder::add_lazy_method).
 pub struct LazyMethodDefinition<U: 'static> {
     /// List of mandatory arguments.
@@ -806,35 +728,6 @@ mod tests {
     }
 
     #[test]
-    fn test_lazy_field() {
-        use crate::{DefaultCompiler, ExecutionContext, SchemeBuilder, Type};
-
-        struct Request {
-            port: i64,
-        }
-
-        fn port_getter(req: &Request) -> Option<LhsValue<'_>> {
-            Some(LhsValue::Int(req.port))
-        }
-
-        let mut builder = SchemeBuilder::new();
-        builder
-            .add_lazy_field::<Request, _>("tcp.port", Type::Int, port_getter)
-            .unwrap();
-
-        let scheme = builder.build();
-        let ast = scheme.parse("tcp.port() == 80").unwrap();
-        let mut compiler = DefaultCompiler::<Request>::new();
-        let filter = ast.compile_with_compiler(&mut compiler);
-
-        let ctx = ExecutionContext::new_with(&scheme, || Request { port: 80 });
-        assert_eq!(filter.execute(&ctx), Ok(true));
-
-        let ctx2 = ExecutionContext::new_with(&scheme, || Request { port: 443 });
-        assert_eq!(filter.execute(&ctx2), Ok(false));
-    }
-
-    #[test]
     fn test_lazy_method_with_key() {
         use crate::{DefaultCompiler, ExecutionContext, SchemeBuilder, Type};
         use std::collections::BTreeMap;
@@ -882,55 +775,4 @@ mod tests {
         assert_eq!(filter.execute(&ctx2), Ok(false));
     }
 
-    #[test]
-    fn test_lazy_field_coexists_with_regular_functions() {
-        use crate::{DefaultCompiler, ExecutionContext, SchemeBuilder, Type, ConcatFunction};
-
-        struct Request {
-            port: i64,
-        }
-
-        fn port_getter(req: &Request) -> Option<LhsValue<'_>> {
-            Some(LhsValue::Int(req.port))
-        }
-
-        let mut builder = SchemeBuilder::new();
-        builder.add_field("ip.addr", Type::Ip).unwrap();
-        builder
-            .add_lazy_field::<Request, _>("tcp.port", Type::Int, port_getter)
-            .unwrap();
-        builder.add_function("concat", ConcatFunction::new()).unwrap();
-
-        let scheme = builder.build();
-        let ast = scheme.parse("tcp.port() == 80").unwrap();
-        let mut compiler = DefaultCompiler::<Request>::new();
-        let filter = ast.compile_with_compiler(&mut compiler);
-
-        let ctx = ExecutionContext::new_with(&scheme, || Request { port: 80 });
-        assert_eq!(filter.execute(&ctx), Ok(true));
-    }
-
-    #[test]
-    fn test_lazy_field_missing_value() {
-        use crate::{DefaultCompiler, ExecutionContext, SchemeBuilder, Type};
-
-        struct Request;
-
-        fn missing_getter(_req: &Request) -> Option<LhsValue<'_>> {
-            None
-        }
-
-        let mut builder = SchemeBuilder::new();
-        builder
-            .add_lazy_field::<Request, _>("value", Type::Int, missing_getter)
-            .unwrap();
-
-        let scheme = builder.build();
-        let ast = scheme.parse("value() == 42").unwrap();
-        let mut compiler = DefaultCompiler::<Request>::new();
-        let filter = ast.compile_with_compiler(&mut compiler);
-
-        let ctx = ExecutionContext::new_with(&scheme, || Request);
-        assert_eq!(filter.execute(&ctx), Ok(false));
-    }
 }

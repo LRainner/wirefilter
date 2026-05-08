@@ -273,12 +273,9 @@ impl ValueExpr for FunctionCallExpr {
                 + Send
                 + 'static,
         > = if definition.needs_user_data() {
-            use crate::functions::{LazyFieldDefinition, LazyMethodDefinition};
+            use crate::functions::LazyMethodDefinition;
 
-            if let Some(lazy_field) = definition.as_any().downcast_ref::<LazyFieldDefinition<C::U>>() {
-                let getter = std::sync::Arc::clone(&lazy_field.getter);
-                Box::new(move |ud: &C::U, _args| getter(ud))
-            } else if let Some(lazy_method) = definition.as_any().downcast_ref::<LazyMethodDefinition<C::U>>() {
+            if let Some(lazy_method) = definition.as_any().downcast_ref::<LazyMethodDefinition<C::U>>() {
                 let implementation = std::sync::Arc::clone(&lazy_method.implementation);
                 let provided = lazy_method.params.len();
                 let remaining_opt = &lazy_method.opt_params[args_count.saturating_sub(provided)..];
