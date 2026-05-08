@@ -1,9 +1,9 @@
 use crate::ast::parse::{FilterParser, ParseError, ParserSettings};
 use crate::ast::{FilterAst, FilterValueAst};
-use crate::functions::FunctionDefinition;
+use crate::functions::{FunctionDefinition, LazyMethodDefinition};
 use crate::lex::{Lex, LexErrorKind, LexResult, LexWith, expect, span, take_while};
 use crate::list_matcher::ListDefinition;
-use crate::types::{GetType, RhsValue, Type};
+use crate::types::{GetType, LhsValue, RhsValue, Type};
 use fnv::FnvBuildHasher;
 use serde::de::Visitor;
 use serde::ser::SerializeMap;
@@ -728,6 +728,31 @@ impl SchemeBuilder {
                 Ok(())
             }
         }
+    }
+
+    /// Registers a lazy method that receives user_data and function args at execution time.
+    ///
+    /// Rule syntax: `method_name(arg1, arg2, ...)`.
+    pub fn add_lazy_method<U: 'static, N: AsRef<str>>(
+        &mut self,
+        name: N,
+        params: Vec<crate::functions::SimpleFunctionParam>,
+        opt_params: Vec<crate::functions::SimpleFunctionOptParam>,
+        return_type: Type,
+        implementation: impl for<'i, 'a> Fn(&'a U, crate::functions::FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Result<(), IdentifierRedefinitionError> {
+        self.add_function(
+            name,
+            LazyMethodDefinition {
+                params,
+                opt_params,
+                return_type,
+                implementation: Arc::new(implementation),
+            },
+        )
     }
 
     /// Configures the behavior of not equal comparison against a nil value.

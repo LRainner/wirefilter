@@ -98,8 +98,9 @@ pub use self::filter::{
 pub use self::functions::{
     AllFunction, AnyFunction, ConcatFunction, FunctionArgInvalidConstantError, FunctionArgKind,
     FunctionArgKindMismatchError, FunctionArgs, FunctionDefinition, FunctionDefinitionContext,
-    FunctionParam, FunctionParamError, SimpleFunctionArgKind, SimpleFunctionDefinition,
-    SimpleFunctionImpl, SimpleFunctionOptParam, SimpleFunctionParam,
+    FunctionParam, FunctionParamError, LazyMethodDefinition,
+    SimpleFunctionArgKind, SimpleFunctionDefinition, SimpleFunctionImpl, SimpleFunctionOptParam,
+    SimpleFunctionParam,
 };
 pub use self::lex::LexErrorKind;
 pub use self::lhs_types::{Array, Bytes, Map, MapIter, TypedArray, TypedMap};

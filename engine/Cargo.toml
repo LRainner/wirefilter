@@ -19,6 +19,10 @@ name = "wirefilter"
 harness = false
 name = "bench"
 
+[[bench]]
+harness = false
+name = "lazy_v2_bench"
+
 [dependencies]
 backtrace.workspace = true
 cfg-if.workspace = true

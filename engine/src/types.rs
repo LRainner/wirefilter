@@ -674,12 +674,12 @@ impl From<RhsValue> for LhsValue<'_> {
 }
 
 impl<'a> LhsValue<'a> {
-    /// Converts a reference to an LhsValue to an LhsValue with an internal
-    /// references
-    pub fn as_ref(&'a self) -> Self {
+    /// Converts a reference to an LhsValue to an LhsValue with internal
+    /// references.
+    pub fn as_ref(&self) -> LhsValue<'_> {
         match self {
             LhsValue::Ip(ip) => LhsValue::Ip(*ip),
-            LhsValue::Bytes(bytes) => LhsValue::Bytes(Bytes::Borrowed(bytes)),
+            LhsValue::Bytes(bytes) => LhsValue::Bytes(Bytes::Borrowed(bytes.as_ref())),
             LhsValue::Int(integer) => LhsValue::Int(*integer),
             LhsValue::Bool(b) => LhsValue::Bool(*b),
             LhsValue::Array(a) => LhsValue::Array(a.as_ref()),

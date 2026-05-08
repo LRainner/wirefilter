@@ -93,11 +93,12 @@ impl<'a> Map<'a> {
         self.data.get(key.as_ref())
     }
 
-    pub(crate) fn as_ref(&'a self) -> Map<'a> {
+    /// Creates a borrowed view of this map.
+    pub fn as_ref(&self) -> Map<'_> {
         Map {
             val_type: self.val_type,
-            data: match self.data {
-                InnerMap::Owned(ref map) => InnerMap::Borrowed(map),
+            data: match &self.data {
+                InnerMap::Owned(map) => InnerMap::Borrowed(map),
                 InnerMap::Borrowed(ref_map) => InnerMap::Borrowed(ref_map),
             },
         }
@@ -544,7 +545,7 @@ impl<'a, V: IntoValue<'a>> TypedMap<'a, V> {
     }
 
     /// Converts the strongly typed map into a borrowed loosely typed map.
-    pub fn as_map(&'a self) -> Map<'a> {
+    pub fn as_map(&self) -> Map<'_> {
         Map {
             val_type: V::TYPE.into(),
             data: InnerMap::Borrowed(self.as_map_ref()),

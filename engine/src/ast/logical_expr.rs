@@ -221,9 +221,9 @@ impl Expr for LogicalExpr {
                 let arg = compiler.compile_logical_expr(*arg);
                 match arg {
                     CompiledExpr::One(one) => {
-                        CompiledExpr::One(CompiledOneExpr::new(move |ctx| !one.execute(ctx)))
+                        CompiledExpr::One(CompiledOneExpr::new(move |ctx, _ud| !one.execute(ctx)))
                     }
-                    CompiledExpr::Vec(vec) => CompiledExpr::Vec(CompiledVecExpr::new(move |ctx| {
+                    CompiledExpr::Vec(vec) => CompiledExpr::Vec(CompiledVecExpr::new(move |ctx, _ud| {
                         vec.execute(ctx).iter().map(|item| !item).collect()
                     })),
                 }
@@ -242,13 +242,13 @@ impl Expr for LogicalExpr {
                             .collect::<Vec<_>>()
                             .into_boxed_slice();
                         match op {
-                            LogicalOp::And => CompiledExpr::One(CompiledOneExpr::new(move |ctx| {
+                            LogicalOp::And => CompiledExpr::One(CompiledOneExpr::new(move |ctx, _ud| {
                                 first.execute(ctx) && items.iter().all(|item| item.execute(ctx))
                             })),
-                            LogicalOp::Or => CompiledExpr::One(CompiledOneExpr::new(move |ctx| {
+                            LogicalOp::Or => CompiledExpr::One(CompiledOneExpr::new(move |ctx, _ud| {
                                 first.execute(ctx) || items.iter().any(|item| item.execute(ctx))
                             })),
-                            LogicalOp::Xor => CompiledExpr::One(CompiledOneExpr::new(move |ctx| {
+                            LogicalOp::Xor => CompiledExpr::One(CompiledOneExpr::new(move |ctx, _ud| {
                                 items
                                     .iter()
                                     .fold(first.execute(ctx), |acc, item| acc ^ item.execute(ctx))
@@ -264,7 +264,7 @@ impl Expr for LogicalExpr {
                             .collect::<Vec<_>>()
                             .into_boxed_slice();
                         match op {
-                            LogicalOp::And => CompiledExpr::Vec(CompiledVecExpr::new(move |ctx| {
+                            LogicalOp::And => CompiledExpr::Vec(CompiledVecExpr::new(move |ctx, _ud| {
                                 let items = items.iter().map(|item| item.execute(ctx));
                                 let mut output = first.execute(ctx);
                                 for values in items {
@@ -279,7 +279,7 @@ impl Expr for LogicalExpr {
                                 }
                                 output
                             })),
-                            LogicalOp::Or => CompiledExpr::Vec(CompiledVecExpr::new(move |ctx| {
+                            LogicalOp::Or => CompiledExpr::Vec(CompiledVecExpr::new(move |ctx, _ud| {
                                 let items = items.iter().map(|item| item.execute(ctx));
                                 let mut output = first.execute(ctx);
                                 for values in items {
@@ -294,7 +294,7 @@ impl Expr for LogicalExpr {
                                 }
                                 output
                             })),
-                            LogicalOp::Xor => CompiledExpr::Vec(CompiledVecExpr::new(move |ctx| {
+                            LogicalOp::Xor => CompiledExpr::Vec(CompiledVecExpr::new(move |ctx, _ud| {
                                 let items = items.iter().map(|item| item.execute(ctx));
                                 let mut output = first.execute(ctx);
                                 for values in items {

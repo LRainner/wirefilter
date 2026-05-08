@@ -28,6 +28,10 @@ fn all_impl<'a>(args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
 pub struct AllFunction {}
 
 impl FunctionDefinition for AllFunction {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn check_param(
         &self,
         _: &ParserSettings,

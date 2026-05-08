@@ -374,7 +374,10 @@ impl std::fmt::Debug for FunctionDefinitionContext {
 }
 
 /// Trait to implement function
-pub trait FunctionDefinition: Debug + Send + Sync {
+pub trait FunctionDefinition: Debug + Send + Sync + 'static {
+    /// Returns the concrete type as `&dyn Any` for downcasting.
+    fn as_any(&self) -> &dyn Any;
+
     /// Custom context to store information during parsing
     fn context(&self) -> Option<FunctionDefinitionContext> {
         None
@@ -405,6 +408,141 @@ pub trait FunctionDefinition: Debug + Send + Sync {
         params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
         ctx: Option<FunctionDefinitionContext>,
     ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>;
+
+    /// Whether this function needs access to the ExecutionContext's user_data.
+    fn needs_user_data(&self) -> bool {
+        false
+    }
+
+    /// Compile with access to user_data. Returns `None` for functions that don't
+    /// need user_data (default). The `'a` lifetime is tied to `&'a dyn Any`,
+    /// allowing the returned `LhsValue<'a>` to borrow from user_data.
+    ///
+    /// Implementations that return `needs_user_data() == true` **must** override
+    /// this method to return `Some(...)`. Returning `None` when `needs_user_data()`
+    /// is `true` will cause a panic at compile time.
+    fn compile_with_user_data(
+        &self,
+        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _ctx: Option<FunctionDefinitionContext>,
+    ) -> Option<Box<dyn for<'i, 'a> Fn(&'a dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>>
+    {
+        None
+    }
+}
+
+// Lazy field/method APIs
+
+use std::sync::Arc;
+
+/// A multi-argument lazy method that reads from user_data.
+///
+/// A lazy method that reads from user_data with parameters.
+/// Registered via [`SchemeBuilder::add_lazy_method`](crate::SchemeBuilder::add_lazy_method).
+pub struct LazyMethodDefinition<U: 'static> {
+    /// List of mandatory arguments.
+    pub params: Vec<SimpleFunctionParam>,
+    /// List of optional arguments.
+    pub opt_params: Vec<SimpleFunctionOptParam>,
+    /// Function return type.
+    pub return_type: Type,
+    /// The implementation that receives user_data and function args.
+    pub implementation: Arc<dyn for<'i, 'a> Fn(&'a U, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Send + Sync + 'static>,
+}
+
+impl<U: 'static> Debug for LazyMethodDefinition<U> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyMethodDefinition")
+            .field("params", &self.params)
+            .field("return_type", &self.return_type)
+            .finish()
+    }
+}
+
+impl<U: 'static> FunctionDefinition for LazyMethodDefinition<U> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn check_param(
+        &self,
+        settings: &ParserSettings,
+        params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        next_param: &FunctionParam<'_>,
+        ctx: Option<&mut FunctionDefinitionContext>,
+    ) -> Result<(), FunctionParamError> {
+        let index = params.len();
+        if index < self.params.len() {
+            let param = &self.params[index];
+            param.arg_kind.expect(next_param.arg_kind())?;
+            next_param.expect_val_type(once(ExpectedType::Type(param.val_type)))?;
+        } else if index < self.params.len() + self.opt_params.len() {
+            let opt_param = &self.opt_params[index - self.params.len()];
+            opt_param.arg_kind.expect(next_param.arg_kind())?;
+            next_param
+                .expect_val_type(once(ExpectedType::Type(opt_param.default_value.get_type())))?;
+        } else {
+            unreachable!();
+        }
+        let _ = (settings, ctx);
+        Ok(())
+    }
+
+    fn return_type(
+        &self,
+        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _ctx: Option<&FunctionDefinitionContext>,
+    ) -> Type {
+        self.return_type
+    }
+
+    fn arg_count(&self) -> (usize, Option<usize>) {
+        (self.params.len(), Some(self.opt_params.len()))
+    }
+
+    fn needs_user_data(&self) -> bool {
+        true
+    }
+
+    fn compile(
+        &self,
+        _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _ctx: Option<FunctionDefinitionContext>,
+    ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
+    {
+        unreachable!("LazyMethodDefinition should use compile_with_user_data")
+    }
+
+    fn compile_with_user_data(
+        &self,
+        params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _ctx: Option<FunctionDefinitionContext>,
+    ) -> Option<Box<dyn for<'i, 'a> Fn(&'a dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>>
+    {
+        let params_count = params.len();
+        let opt_params = &self.opt_params[(params_count - self.params.len())..];
+        let implementation = Arc::clone(&self.implementation);
+
+        if opt_params.is_empty() {
+            Some(Box::new(move |user_data, args| {
+                let ud = user_data.downcast_ref::<U>().expect(
+                    "LazyMethodDefinition: user_data type mismatch",
+                );
+                implementation(ud, args)
+            }))
+        } else {
+            let opt_args: Vec<CompiledValueResult<'static>> = opt_params
+                .iter()
+                .map(|opt_param| Ok(opt_param.default_value.clone()))
+                .collect();
+            Some(Box::new(move |user_data, args| {
+                let ud = user_data.downcast_ref::<U>().expect(
+                    "LazyMethodDefinition: user_data type mismatch",
+                );
+                implementation(ud, &mut ExactSizeChain::new(args, opt_args.iter().cloned()))
+            }))
+        }
+    }
 }
 
 // Simple function APIs
@@ -491,6 +629,10 @@ pub struct SimpleFunctionDefinition {
 }
 
 impl FunctionDefinition for SimpleFunctionDefinition {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn check_param(
         &self,
         _settings: &ParserSettings,
@@ -588,4 +730,53 @@ mod tests {
 
         is_sync::<FunctionDefinitionContext>();
     }
+
+    #[test]
+    fn test_lazy_method_with_key() {
+        use crate::{DefaultCompiler, ExecutionContext, SchemeBuilder, Type};
+        use std::collections::BTreeMap;
+
+        struct Request {
+            headers: BTreeMap<Box<[u8]>, Box<[u8]>>,
+        }
+
+        fn header_getter<'a>(req: &'a Request, args: FunctionArgs<'_, 'a>) -> Option<LhsValue<'a>> {
+            let arg = args.next()?;
+            let key: &[u8] = match &arg {
+                Ok(LhsValue::Bytes(b)) => b.as_ref(),
+                _ => return None,
+            };
+            req.headers.get(key).map(|v| LhsValue::Bytes(crate::Bytes::from(&v[..])))
+        }
+
+        let mut builder = SchemeBuilder::new();
+        builder
+            .add_lazy_method::<Request, _>(
+                "http.header",
+                vec![SimpleFunctionParam {
+                    arg_kind: SimpleFunctionArgKind::Literal,
+                    val_type: Type::Bytes,
+                }],
+                vec![],
+                Type::Bytes,
+                header_getter,
+            )
+            .unwrap();
+
+        let scheme = builder.build();
+        let ast = scheme.parse(r#"http.header("host") contains "example""#).unwrap();
+        let mut compiler = DefaultCompiler::<Request>::new();
+        let filter = ast.compile_with_compiler(&mut compiler);
+
+        let mut headers = BTreeMap::new();
+        headers.insert(b"host".as_slice().into(), b"example.com".as_slice().into());
+        let ctx = ExecutionContext::new_with(&scheme, || Request { headers });
+        assert_eq!(filter.execute(&ctx), Ok(true));
+
+        let mut headers2 = BTreeMap::new();
+        headers2.insert(b"host".as_slice().into(), b"other.com".as_slice().into());
+        let ctx2 = ExecutionContext::new_with(&scheme, || Request { headers: headers2 });
+        assert_eq!(filter.execute(&ctx2), Ok(false));
+    }
+
 }
