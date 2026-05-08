@@ -44,85 +44,85 @@ fn build_headers() -> TypedMap<'static, TypedArray<'static, Bytes<'static>>> {
 
     let mut ua_arr = TypedArray::new();
     ua_arr.push(Bytes::from("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"));
-    headers.insert(b"user-agent".into(), ua_arr);
+    headers.insert(b"user-agent".as_slice().into(), ua_arr);
 
     let mut host_arr = TypedArray::new();
     host_arr.push(Bytes::from("www.example.com"));
-    headers.insert(b"host".into(), host_arr);
+    headers.insert(b"host".as_slice().into(), host_arr);
 
     let mut xff_arr = TypedArray::new();
     xff_arr.push(Bytes::from("203.0.113.45"));
     xff_arr.push(Bytes::from("70.41.3.18"));
     xff_arr.push(Bytes::from("150.172.238.178"));
-    headers.insert(b"x-forwarded-for".into(), xff_arr);
+    headers.insert(b"x-forwarded-for".as_slice().into(), xff_arr);
 
     let mut cookie_arr = TypedArray::new();
     cookie_arr.push(Bytes::from("session=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c; _ga=GA1.2.123456789.1609459200; _gid=GA1.2.987654321.1609459200; csrf_token=a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6; theme=dark; lang=en-US; preferences=%7B%22notifications%22%3Atrue%2C%22autoplay%22%3Afalse%2C%22quality%22%3A%22hd%22%7D; last_visit=2024-01-15T08%3A30%3A00Z; ab_test=variant_b; tracking_id=UA-12345678-1; referrer=https%3A%2F%2Fwww.google.com%2Fsearch%3Fq%3Dexample"));
-    headers.insert(b"cookie".into(), cookie_arr);
+    headers.insert(b"cookie".as_slice().into(), cookie_arr);
 
     let mut auth_arr = TypedArray::new();
     auth_arr.push(Bytes::from("Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6IjEyMzQ1Njc4OTAifQ.eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIiwiYXVkIjoiaHR0cHM6Ly9hcGkuZXhhbXBsZS5jb20iLCJzdWIiOiJ1c2VyOjEyMzQ1IiwiaWF0IjoxNjA5NDU5MjAwLCJleHAiOjE2MDk0NjI4MDB9"));
-    headers.insert(b"authorization".into(), auth_arr);
+    headers.insert(b"authorization".as_slice().into(), auth_arr);
 
     let mut ct_arr = TypedArray::new();
     ct_arr.push(Bytes::from("application/json; charset=utf-8"));
-    headers.insert(b"content-type".into(), ct_arr);
+    headers.insert(b"content-type".as_slice().into(), ct_arr);
 
     let mut cl_arr = TypedArray::new();
     cl_arr.push(Bytes::from("2048"));
-    headers.insert(b"content-length".into(), cl_arr);
+    headers.insert(b"content-length".as_slice().into(), cl_arr);
 
     let mut accept_arr = TypedArray::new();
     accept_arr.push(Bytes::from("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"));
-    headers.insert(b"accept".into(), accept_arr);
+    headers.insert(b"accept".as_slice().into(), accept_arr);
 
     let mut enc_arr = TypedArray::new();
     enc_arr.push(Bytes::from("gzip, deflate, br"));
-    headers.insert(b"accept-encoding".into(), enc_arr);
+    headers.insert(b"accept-encoding".as_slice().into(), enc_arr);
 
     let mut lang_arr = TypedArray::new();
     lang_arr.push(Bytes::from("en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7"));
-    headers.insert(b"accept-language".into(), lang_arr);
+    headers.insert(b"accept-language".as_slice().into(), lang_arr);
 
     let mut conn_arr = TypedArray::new();
     conn_arr.push(Bytes::from("keep-alive"));
-    headers.insert(b"connection".into(), conn_arr);
+    headers.insert(b"connection".as_slice().into(), conn_arr);
 
     let mut ref_arr = TypedArray::new();
     ref_arr.push(Bytes::from("https://www.example.com/dashboard/settings?tab=security&section=2fa"));
-    headers.insert(b"referer".into(), ref_arr);
+    headers.insert(b"referer".as_slice().into(), ref_arr);
 
     let mut origin_arr = TypedArray::new();
     origin_arr.push(Bytes::from("https://www.example.com"));
-    headers.insert(b"origin".into(), origin_arr);
+    headers.insert(b"origin".as_slice().into(), origin_arr);
 
     let mut cache_arr = TypedArray::new();
     cache_arr.push(Bytes::from("no-cache"));
-    headers.insert(b"cache-control".into(), cache_arr);
+    headers.insert(b"cache-control".as_slice().into(), cache_arr);
 
     let mut xrid_arr = TypedArray::new();
     xrid_arr.push(Bytes::from("req-550e8400-e29b-41d4-a716-446655440000"));
-    headers.insert(b"x-request-id".into(), xrid_arr);
+    headers.insert(b"x-request-id".as_slice().into(), xrid_arr);
 
     let mut xffproto_arr = TypedArray::new();
     xffproto_arr.push(Bytes::from("https"));
-    headers.insert(b"x-forwarded-proto".into(), xffproto_arr);
+    headers.insert(b"x-forwarded-proto".as_slice().into(), xffproto_arr);
 
     let mut xffhost_arr = TypedArray::new();
     xffhost_arr.push(Bytes::from("api.example.com"));
-    headers.insert(b"x-forwarded-host".into(), xffhost_arr);
+    headers.insert(b"x-forwarded-host".as_slice().into(), xffhost_arr);
 
     let mut dnt_arr = TypedArray::new();
     dnt_arr.push(Bytes::from("1"));
-    headers.insert(b"dnt".into(), dnt_arr);
+    headers.insert(b"dnt".as_slice().into(), dnt_arr);
 
     let mut sec_fetch_arr = TypedArray::new();
     sec_fetch_arr.push(Bytes::from("same-origin"));
-    headers.insert(b"sec-fetch-mode".into(), sec_fetch_arr);
+    headers.insert(b"sec-fetch-mode".as_slice().into(), sec_fetch_arr);
 
     let mut sec_site_arr = TypedArray::new();
     sec_site_arr.push(Bytes::from("same-origin"));
-    headers.insert(b"sec-fetch-site".into(), sec_site_arr);
+    headers.insert(b"sec-fetch-site".as_slice().into(), sec_site_arr);
 
     headers
 }
@@ -133,44 +133,44 @@ fn build_query() -> TypedMap<'static, TypedArray<'static, Bytes<'static>>> {
     let mut id_arr = TypedArray::new();
     id_arr.push(Bytes::from("><script>alert(1)</script>"));
     id_arr.push(Bytes::from("normal_value"));
-    query.insert(b"id".into(), id_arr);
+    query.insert(b"id".as_slice().into(), id_arr);
 
     let mut page_arr = TypedArray::new();
     page_arr.push(Bytes::from("1"));
-    query.insert(b"page".into(), page_arr);
+    query.insert(b"page".as_slice().into(), page_arr);
 
     let mut sort_arr = TypedArray::new();
     sort_arr.push(Bytes::from("created_at"));
-    query.insert(b"sort".into(), sort_arr);
+    query.insert(b"sort".as_slice().into(), sort_arr);
 
     let mut order_arr = TypedArray::new();
     order_arr.push(Bytes::from("desc"));
-    query.insert(b"order".into(), order_arr);
+    query.insert(b"order".as_slice().into(), order_arr);
 
     let mut filter_arr = TypedArray::new();
     filter_arr.push(Bytes::from("status:active"));
     filter_arr.push(Bytes::from("type:premium"));
-    query.insert(b"filter".into(), filter_arr);
+    query.insert(b"filter".as_slice().into(), filter_arr);
 
     let mut search_arr = TypedArray::new();
     search_arr.push(Bytes::from("example product query with special chars & < > \" '"));
-    query.insert(b"q".into(), search_arr);
+    query.insert(b"q".as_slice().into(), search_arr);
 
     let mut token_arr = TypedArray::new();
     token_arr.push(Bytes::from("eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoxMjM0fQ"));
-    query.insert(b"token".into(), token_arr);
+    query.insert(b"token".as_slice().into(), token_arr);
 
     let mut lang_arr = TypedArray::new();
     lang_arr.push(Bytes::from("en"));
-    query.insert(b"lang".into(), lang_arr);
+    query.insert(b"lang".as_slice().into(), lang_arr);
 
     let mut ver_arr = TypedArray::new();
     ver_arr.push(Bytes::from("2.1.0"));
-    query.insert(b"v".into(), ver_arr);
+    query.insert(b"v".as_slice().into(), ver_arr);
 
     let mut debug_arr = TypedArray::new();
     debug_arr.push(Bytes::from("false"));
-    query.insert(b"debug".into(), debug_arr);
+    query.insert(b"debug".as_slice().into(), debug_arr);
 
     query
 }
