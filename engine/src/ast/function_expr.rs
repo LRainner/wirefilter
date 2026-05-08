@@ -294,7 +294,7 @@ impl ValueExpr for FunctionCallExpr {
                 // Fallback for unknown lazy types (still has runtime downcast)
                 let inner = definition
                     .compile_with_user_data(&mut args.iter().map(|arg| arg.into()), context)
-                    .unwrap();
+                    .expect("FunctionDefinition::needs_user_data() returned true but compile_with_user_data() returned None");
                 Box::new(move |ud: &C::U, args| inner(ud, args))
             }
         } else {

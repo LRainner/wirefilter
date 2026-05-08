@@ -417,6 +417,10 @@ pub trait FunctionDefinition: Debug + Send + Sync + 'static {
     /// Compile with access to user_data. Returns `None` for functions that don't
     /// need user_data (default). The `'a` lifetime is tied to `&'a dyn Any`,
     /// allowing the returned `LhsValue<'a>` to borrow from user_data.
+    ///
+    /// Implementations that return `needs_user_data() == true` **must** override
+    /// this method to return `Some(...)`. Returning `None` when `needs_user_data()`
+    /// is `true` will cause a panic at compile time.
     fn compile_with_user_data(
         &self,
         _params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
