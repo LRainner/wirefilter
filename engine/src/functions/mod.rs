@@ -405,6 +405,33 @@ pub trait FunctionDefinition: Debug + Send + Sync {
         params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
         ctx: Option<FunctionDefinitionContext>,
     ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>;
+
+    /// Compile the function definition down to a context-aware closure that
+    /// receives the `ExecutionContext`'s user_data as `&dyn Any` during filter
+    /// execution.
+    ///
+    /// By default, this returns `None`, and the non-context `compile()` method
+    /// is used instead. Override this method to return a context-aware closure
+    /// when the function needs to access `ExecutionContext`'s user_data at runtime.
+    ///
+    /// The `user_data` parameter is a `&dyn Any` reference to the `U` type
+    /// stored in `ExecutionContext`. Downcast it with
+    /// `user_data.downcast_ref::<YourType>()`.
+    fn compile_with_ctx(
+        &self,
+        params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        ctx: Option<FunctionDefinitionContext>,
+    ) -> Option<
+        Box<
+            dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>
+                + Sync
+                + Send
+                + 'static,
+        >,
+    > {
+        let _ = (params, ctx);
+        None
+    }
 }
 
 // Simple function APIs
@@ -549,6 +576,135 @@ impl FunctionDefinition for SimpleFunctionDefinition {
                 assert_eq!(params_count, args.len());
                 (implementation.0)(&mut ExactSizeChain::new(args, opt_args.iter().cloned()))
             })
+        }
+    }
+}
+
+// Context-aware function APIs
+
+type ContextFunctionPtr = for<'i, 'a> fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>;
+
+/// Wrapper around a context-aware function pointer providing the runtime
+/// implementation.
+#[derive(Clone, Copy)]
+pub struct SimpleContextFunctionImpl(ContextFunctionPtr);
+
+impl SimpleContextFunctionImpl {
+    /// Creates a new wrapper around a context-aware function pointer.
+    pub fn new(func: ContextFunctionPtr) -> Self {
+        Self(func)
+    }
+}
+
+impl fmt::Debug for SimpleContextFunctionImpl {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_tuple("SimpleContextFunctionImpl")
+            .field(&(self.0 as *const ()))
+            .finish()
+    }
+}
+
+/// Simple interface to define a context-aware function that can access
+/// `ExecutionContext`'s user_data at runtime.
+///
+/// The function implementation receives `&dyn Any` (the user_data) as the
+/// first argument. Downcast it with `user_data.downcast_ref::<YourType>()`.
+#[derive(Debug, Clone)]
+pub struct SimpleContextFunctionDefinition {
+    /// List of mandatory arguments.
+    pub params: Vec<SimpleFunctionParam>,
+    /// List of optional arguments that can be specified after mandatory ones.
+    pub opt_params: Vec<SimpleFunctionOptParam>,
+    /// Function return type.
+    pub return_type: Type,
+    /// Actual implementation that will be called at runtime with user_data.
+    pub implementation: SimpleContextFunctionImpl,
+}
+
+impl FunctionDefinition for SimpleContextFunctionDefinition {
+    fn check_param(
+        &self,
+        _settings: &ParserSettings,
+        params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        next_param: &FunctionParam<'_>,
+        _: Option<&mut FunctionDefinitionContext>,
+    ) -> Result<(), FunctionParamError> {
+        let index = params.len();
+        if index < self.params.len() {
+            let param = &self.params[index];
+            param.arg_kind.expect(next_param.arg_kind())?;
+            next_param.expect_val_type(once(ExpectedType::Type(param.val_type)))?;
+        } else if index < self.params.len() + self.opt_params.len() {
+            let opt_param = &self.opt_params[index - self.params.len()];
+            opt_param.arg_kind.expect(next_param.arg_kind())?;
+            next_param
+                .expect_val_type(once(ExpectedType::Type(opt_param.default_value.get_type())))?;
+        } else {
+            unreachable!();
+        }
+        Ok(())
+    }
+
+    fn return_type(
+        &self,
+        _: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _: Option<&FunctionDefinitionContext>,
+    ) -> Type {
+        self.return_type
+    }
+
+    fn arg_count(&self) -> (usize, Option<usize>) {
+        (self.params.len(), Some(self.opt_params.len()))
+    }
+
+    fn compile(
+        &self,
+        params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _: Option<FunctionDefinitionContext>,
+    ) -> Box<dyn for<'i, 'a> Fn(FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>> + Sync + Send + 'static>
+    {
+        let params_count = params.len();
+        let implementation = self.implementation;
+        Box::new(move |args| {
+            assert_eq!(params_count, args.len());
+            (implementation.0)(&() as &dyn Any, args)
+        })
+    }
+
+    fn compile_with_ctx(
+        &self,
+        params: &mut dyn ExactSizeIterator<Item = FunctionParam<'_>>,
+        _: Option<FunctionDefinitionContext>,
+    ) -> Option<
+        Box<
+            dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>
+                + Sync
+                + Send
+                + 'static,
+        >,
+    > {
+        let params_count = params.len();
+        let opt_params = &self.opt_params[(params_count - self.params.len())..];
+        let implementation = self.implementation;
+        if opt_params.is_empty() {
+            Some(Box::new(move |user_data: &dyn Any, args: FunctionArgs<'_, '_>| {
+                assert_eq!(params_count, args.len());
+                (implementation.0)(user_data, args)
+            }))
+        } else {
+            let opt_args: Vec<Result<LhsValue<'static>, Type>> = opt_params
+                .iter()
+                .map(|opt_param| Ok(opt_param.default_value.clone()))
+                .collect();
+            Some(Box::new(
+                move |user_data: &dyn Any, args: FunctionArgs<'_, '_>| {
+                    assert_eq!(params_count, args.len());
+                    (implementation.0)(
+                        user_data,
+                        &mut ExactSizeChain::new(args, opt_args.iter().cloned()),
+                    )
+                },
+            ))
         }
     }
 }

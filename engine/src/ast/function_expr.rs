@@ -16,6 +16,7 @@ use crate::lhs_types::Array;
 use crate::scheme::Function;
 use crate::types::{GetType, LhsValue, RhsValue, Type};
 use serde::Serialize;
+use std::any::Any;
 use std::hash::{Hash, Hasher};
 use std::iter::once;
 
@@ -260,9 +261,28 @@ impl ValueExpr for FunctionCallExpr {
             ..
         } = self;
         let map_each_count = args.first().map_or(0, |arg| arg.map_each_count());
-        let call = function
-            .as_definition()
-            .compile(&mut args.iter().map(|arg| arg.into()), context);
+
+        let definition = function.as_definition();
+
+        // Try context-aware compile first; fall back to plain compile
+        let ctx_call = definition.compile_with_ctx(
+            &mut args.iter().map(|arg| arg.into()),
+            context.clone(),
+        );
+
+        let call: Box<
+            dyn for<'i, 'a> Fn(&dyn Any, FunctionArgs<'i, 'a>) -> Option<LhsValue<'a>>
+                + Sync
+                + Send
+                + 'static,
+        > = if let Some(ctx_aware) = ctx_call {
+            ctx_aware
+        } else {
+            let plain_call =
+                definition.compile(&mut args.iter().map(|arg| arg.into()), context);
+            Box::new(move |_: &dyn Any, args: FunctionArgs<'_, '_>| plain_call(args))
+        };
+
         let mut args = args
             .into_iter()
             .map(|arg| compiler.compile_function_call_arg_expr(arg))
@@ -274,9 +294,11 @@ impl ValueExpr for FunctionCallExpr {
             #[inline(always)]
             fn compute<'s, 'a, I: ExactSizeIterator<Item = CompiledValueResult<'a>>>(
                 first: CompiledValueResult<'a>,
-                call: &(
-                     dyn for<'b> Fn(FunctionArgs<'_, 'b>) -> Option<LhsValue<'b>> + Sync + Send + 's
-                 ),
+                user_data: &dyn Any,
+                call: &(dyn for<'b> Fn(&dyn Any, FunctionArgs<'_, 'b>) -> Option<LhsValue<'b>>
+                    + Sync
+                    + Send
+                    + 's),
                 return_type: Type,
                 f: impl Fn(LhsValue<'a>) -> I,
             ) -> CompiledValueResult<'a> {
@@ -298,7 +320,9 @@ impl ValueExpr for FunctionCallExpr {
                     _ => unreachable!(),
                 };
                 if !first.is_empty() {
-                    first = first.filter_map_to(return_type, |elem| call(&mut f(elem)));
+                    first = first.filter_map_to(return_type, |elem| {
+                        call(user_data, &mut f(elem))
+                    });
                 }
                 Ok(LhsValue::Array(first))
             }
@@ -307,7 +331,8 @@ impl ValueExpr for FunctionCallExpr {
                 CompiledValueExpr::new(move |ctx| {
                     compute(
                         first.execute(ctx),
-                        &call,
+                        ctx.get_user_data(),
+                        &*call,
                         return_type,
                         #[inline]
                         |elem| once(Ok(elem)),
@@ -317,7 +342,8 @@ impl ValueExpr for FunctionCallExpr {
                 CompiledValueExpr::new(move |ctx| {
                     compute(
                         first.execute(ctx),
-                        &call,
+                        ctx.get_user_data(),
+                        &*call,
                         return_type,
                         #[inline]
                         |elem| {
@@ -331,7 +357,7 @@ impl ValueExpr for FunctionCallExpr {
             }
         } else {
             CompiledValueExpr::new(move |ctx| {
-                match call(&mut args.iter().map(|arg| arg.execute(ctx))) {
+                match call(ctx.get_user_data(), &mut args.iter().map(|arg| arg.execute(ctx))) {
                     Some(value) => {
                         debug_assert!(value.get_type() == return_type);
                         Ok(value)
